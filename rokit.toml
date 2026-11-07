@@ -1,0 +1,8 @@
+# Rokit / Aftman toolchain manifest for NIGHTLINE: LAST TRAIN
+# Install tools locally with: `rokit install` or `aftman install`
+
+[tools]
+rojo = "rojo-rbx/rojo@7.4.4"
+stylua = "JohnnyMorganz/StyLua@2.0.2"
+selene = "Kampfkarren/selene@0.27.1"
+luau-lsp = "JohnnyMorganz/luau-lsp@1.36.1"

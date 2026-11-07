@@ -1,0 +1,6 @@
+{
+  "name": "NIGHTLINE: LAST TRAIN",
+  "description": "Multiplayer cooperative survival adventure on Roblox (Luau/Rojo) — Milestone 0 & 1 Train Hub, Round State Machine, Security Service, and Interactive Studio Workbench.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

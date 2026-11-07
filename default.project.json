@@ -1,0 +1,91 @@
+{
+  "name": "NIGHTLINE_Last_Train",
+  "tree": {
+    "$className": "DataModel",
+    "ReplicatedStorage": {
+      "$className": "ReplicatedStorage",
+      "Shared": {
+        "$path": "roblox/ReplicatedStorage/Shared"
+      },
+      "Remotes": {
+        "$path": "roblox/ReplicatedStorage/Remotes"
+      }
+    },
+    "ServerScriptService": {
+      "$className": "ServerScriptService",
+      "Bootstrap": {
+        "$path": "roblox/ServerScriptService/Bootstrap.server.lua"
+      },
+      "Services": {
+        "$path": "roblox/ServerScriptService/Services"
+      }
+    },
+    "ServerStorage": {
+      "$className": "ServerStorage",
+      "Assets": {
+        "$className": "Folder",
+        "Stations": {
+          "$className": "Folder"
+        },
+        "Monsters": {
+          "$className": "Folder"
+        },
+        "Items": {
+          "$className": "Folder"
+        },
+        "Equipment": {
+          "$className": "Folder"
+        }
+      },
+      "Templates": {
+        "$className": "Folder"
+      }
+    },
+    "StarterGui": {
+      "$className": "StarterGui",
+      "$properties": {
+        "ResetPlayerGuiOnSpawn": false
+      }
+    },
+    "StarterPlayer": {
+      "$className": "StarterPlayer",
+      "StarterPlayerScripts": {
+        "$className": "StarterPlayerScripts",
+        "ClientBootstrap": {
+          "$path": "roblox/StarterPlayer/StarterPlayerScripts/ClientBootstrap.client.lua"
+        },
+        "Controllers": {
+          "$path": "roblox/StarterPlayer/StarterPlayerScripts/Controllers"
+        }
+      }
+    },
+    "Workspace": {
+      "$className": "Workspace",
+      "$properties": {
+        "FilteringEnabled": true,
+        "StreamingEnabled": true
+      },
+      "World": {
+        "$className": "Folder",
+        "Hub": {
+          "$className": "Folder",
+          "Train": {
+            "$className": "Model"
+          },
+          "Spawns": {
+            "$className": "Folder"
+          }
+        },
+        "Runtime": {
+          "$className": "Folder",
+          "ActiveStation": {
+            "$className": "Folder"
+          }
+        }
+      },
+      "Environment": {
+        "$className": "Folder"
+      }
+    }
+  }
+}

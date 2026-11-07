@@ -1,0 +1,11 @@
+std = "roblox"
+
+[rules]
+multiple_statements = "allow"
+shadowing = "warn"
+unused_variable = "warn"
+empty_if = "deny"
+mismatched_arg_count = "deny"
+suspicious_reverse_loop = "deny"
+unbalanced_assignments = "deny"
+undefined_variable = "deny"

@@ -1,0 +1,12 @@
+{
+  "languageMode": "strict",
+  "lint": {
+    "*": true,
+    "LocalShadow": true,
+    "ImplicitReturn": true,
+    "UnusedVariable": true
+  },
+  "lintErrors": false,
+  "typeErrors": true,
+  "globals": []
+}
