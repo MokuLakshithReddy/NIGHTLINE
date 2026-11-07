@@ -256,6 +256,28 @@ export default function App() {
     [isMuted, syncHudFromEngine]
   );
 
+  const handleEliminatePlayer = useCallback(
+    (userId: number) => {
+      const srv = engineRef.current;
+      if (!srv) return;
+      const res = srv.eliminatePlayer(userId, 'HollowStrike');
+      playProceduralCue(audioCtxRef, isMuted, res.ok ? 'reject' : 'click');
+      syncHudFromEngine();
+    },
+    [isMuted, syncHudFromEngine]
+  );
+
+  const handleMoveToExtractionZone = useCallback(
+    (userId: number) => {
+      const srv = engineRef.current;
+      if (!srv) return;
+      const res = srv.movePlayerToExtractionZone(userId);
+      playProceduralCue(audioCtxRef, isMuted, res.ok ? 'board' : 'reject');
+      syncHudFromEngine();
+    },
+    [isMuted, syncHudFromEngine]
+  );
+
   const handleAdvancePhase = useCallback(() => {
     const srv = engineRef.current;
     if (!srv) return;
@@ -275,12 +297,29 @@ export default function App() {
   }, [isMuted, syncHudFromEngine]);
 
   const handleRunSecurityTest = useCallback(
-    (testType: 'invalidItem' | 'invalidSlot' | 'invalidStation' | 'farPrompt' | 'rateLimit') => {
+    (
+      testType:
+        | 'invalidItem'
+        | 'invalidSlot'
+        | 'invalidStation'
+        | 'farPrompt'
+        | 'rateLimit'
+        | 'speedHack'
+    ) => {
       const srv = engineRef.current;
       if (!srv) return;
       srv.stepSimulation(1.0);
 
-      if (testType === 'invalidItem') {
+      if (testType === 'speedHack') {
+        const p = srv.players.get(LOCAL_USER_ID);
+        if (p) {
+          srv.validatePlayerMovement(
+            LOCAL_USER_ID,
+            { x: p.position.x, z: p.position.z - 80 },
+            0.25
+          );
+        }
+      } else if (testType === 'invalidItem') {
         srv.handleEquipmentRequest(LOCAL_USER_ID, 1, 'AdminMinigun');
       } else if (testType === 'invalidSlot') {
         srv.handleEquipmentRequest(LOCAL_USER_ID, 99, 'Flashlight');
@@ -683,6 +722,17 @@ export default function App() {
             >
               Walk to Console
             </button>
+
+            <button
+              type="button"
+              onClick={(e) => {
+                e.currentTarget.blur();
+                handleMoveToExtractionZone(LOCAL_USER_ID);
+              }}
+              className="px-3 py-2 text-xs font-mono text-emerald-300 hover:text-white bg-emerald-950/60 hover:bg-emerald-900/70 border border-emerald-700/60 rounded-lg cursor-pointer whitespace-nowrap shrink-0"
+            >
+              Extract Zone
+            </button>
           </div>
         </div>
       )}
@@ -758,6 +808,8 @@ export default function App() {
         remoteLogs={hudSnapshot.remoteLogs}
         onAddSimulatedPlayer={handleAddSimulatedPlayer}
         onRemoveSimulatedPlayer={handleRemoveSimulatedPlayer}
+        onEliminatePlayer={handleEliminatePlayer}
+        onMoveToExtractionZone={handleMoveToExtractionZone}
         onAdvancePhase={handleAdvancePhase}
         onResetServer={handleResetServer}
         onRunSecurityTest={handleRunSecurityTest}

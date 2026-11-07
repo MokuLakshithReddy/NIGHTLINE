@@ -62,7 +62,6 @@
     "Workspace": {
       "$className": "Workspace",
       "$properties": {
-        "FilteringEnabled": true,
         "StreamingEnabled": true
       },
       "World": {

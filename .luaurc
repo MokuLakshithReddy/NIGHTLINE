@@ -4,7 +4,7 @@
     "*": true,
     "LocalShadow": true,
     "ImplicitReturn": true,
-    "UnusedVariable": true
+    "LocalUnused": true
   },
   "lintErrors": false,
   "typeErrors": true,

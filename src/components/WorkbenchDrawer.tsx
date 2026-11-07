@@ -15,9 +15,19 @@ interface WorkbenchDrawerProps {
   remoteLogs: RemoteLogEntry[];
   onAddSimulatedPlayer: () => void;
   onRemoveSimulatedPlayer: (userId: number) => void;
+  onEliminatePlayer: (userId: number) => void;
+  onMoveToExtractionZone: (userId: number) => void;
   onAdvancePhase: () => void;
   onResetServer: () => void;
-  onRunSecurityTest: (testType: 'invalidItem' | 'invalidSlot' | 'invalidStation' | 'farPrompt' | 'rateLimit') => void;
+  onRunSecurityTest: (
+    testType:
+      | 'invalidItem'
+      | 'invalidSlot'
+      | 'invalidStation'
+      | 'farPrompt'
+      | 'rateLimit'
+      | 'speedHack'
+  ) => void;
   engine: NightlineServerEngine;
 }
 
@@ -30,6 +40,8 @@ export const WorkbenchDrawer: React.FC<WorkbenchDrawerProps> = ({
   remoteLogs,
   onAddSimulatedPlayer,
   onRemoveSimulatedPlayer,
+  onEliminatePlayer,
+  onMoveToExtractionZone,
   onAdvancePhase,
   onResetServer,
   onRunSecurityTest,
@@ -64,14 +76,14 @@ export const WorkbenchDrawer: React.FC<WorkbenchDrawerProps> = ({
       <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800 bg-slate-950">
         <div>
           <h2 className="text-base font-bold tracking-tight text-slate-100">
-            NIGHTLINE: LAST TRAIN · Rojo &amp; Luau Studio Workbench
+            NIGHTLINE: LAST TRAIN · Rojo 7.7.1 &amp; Luau VM Workbench
           </h2>
           <p className="text-xs text-slate-400 mt-0.5">
-            <span>Milestone 0 &amp; Milestone 1</span>
+            <span>Rojo 7.7.1</span>
             <span className="mx-2" aria-hidden="true">·</span>
-            <span>Luau --!strict</span>
+            <span>luau-lsp --!strict (0 Errors)</span>
             <span className="mx-2" aria-hidden="true">·</span>
-            <span>Native Service/Controller Architecture</span>
+            <span>Selene + StyLua + Luau VM Verified</span>
           </p>
         </div>
 
@@ -95,7 +107,7 @@ export const WorkbenchDrawer: React.FC<WorkbenchDrawerProps> = ({
               : 'text-slate-300 hover:bg-slate-800'
           }`}
         >
-          Rojo &amp; Luau Source (19)
+          Rojo &amp; Luau Source (20)
         </button>
         <button
           type="button"
@@ -117,7 +129,7 @@ export const WorkbenchDrawer: React.FC<WorkbenchDrawerProps> = ({
               : 'text-slate-300 hover:bg-slate-800'
           }`}
         >
-          Security &amp; RemoteEvent Log ({remoteLogs.length})
+          Security &amp; Movement Log ({remoteLogs.length})
         </button>
         <button
           type="button"
@@ -214,27 +226,27 @@ export const WorkbenchDrawer: React.FC<WorkbenchDrawerProps> = ({
                   {engine.state} ({Math.ceil(engine.phaseRemainingSeconds)}s)
                 </div>
                 <div className="text-xs text-slate-400 mt-1">
-                  Round #{engine.roundNumber} · Mission: {engine.selectedMissionId}
+                  Round #{engine.roundNumber} · Outcome: {engine.lastOutcome}
                 </div>
               </div>
 
               <div className="p-4 border border-slate-800 rounded-lg bg-slate-950">
-                <div className="text-xs text-slate-400">Crew &amp; Late-Join Isolation</div>
+                <div className="text-xs text-slate-400">Spawn Slots &amp; Isolation</div>
                 <div className="text-xl font-bold text-slate-100 font-mono mt-1 tabular-nums">
-                  {players.length} / 6 Connected · {engine.activeExpeditionUserIds.size} Active in Expedition
+                  {players.length} / 6 Slots · {engine.activeExpeditionUserIds.size} in Expedition
                 </div>
                 <div className="text-xs text-slate-400 mt-1">
-                  Late joiners stay in HUB_WAITING until next Intermission
+                  Freed slots are reallocated without collision (Issue 02)
                 </div>
               </div>
 
               <div className="p-4 border border-slate-800 rounded-lg bg-slate-950">
-                <div className="text-xs text-slate-400">Runtime Station Instances</div>
-                <div className="text-xl font-bold text-sky-400 font-mono mt-1 tabular-nums">
-                  {engine.runtimeStationObjectsCount} Active Objects
+                <div className="text-xs text-slate-400">Physical Extraction Zone</div>
+                <div className="text-xl font-bold text-emerald-400 font-mono mt-1 tabular-nums">
+                  X=15, Z=-8 (r=13)
                 </div>
                 <div className="text-xs text-slate-400 mt-1">
-                  Janitor cleans all temporary objects on RESULTS end
+                  Crew outside zone on departure are ELIMINATED (Issue 04)
                 </div>
               </div>
             </div>
@@ -269,18 +281,18 @@ export const WorkbenchDrawer: React.FC<WorkbenchDrawerProps> = ({
               <table className="w-full text-left border-collapse">
                 <thead>
                   <tr className="bg-slate-950 text-xs font-mono text-slate-400 border-b border-slate-800">
-                    <th className="py-2.5 px-4">Player</th>
+                    <th className="py-2.5 px-4">Player &amp; Slot</th>
                     <th className="py-2.5 px-4">Round Status</th>
                     <th className="py-2.5 px-4">Loadout (Slot 1 / Slot 2)</th>
                     <th className="py-2.5 px-4 text-right">Position (X, Z)</th>
-                    <th className="py-2.5 px-4 text-right">Action</th>
+                    <th className="py-2.5 px-4 text-right">QA Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800 text-xs">
                   {players.map((member) => (
                     <tr key={member.userId} className="hover:bg-slate-800/30">
                       <td className="py-2.5 px-4 font-medium text-slate-100">
-                        {member.displayName} {member.isLocal ? '(You)' : ''}
+                        {member.displayName} [Slot #{member.spawnSlot}] {member.isLocal ? '(You)' : ''}
                       </td>
                       <td className="py-2.5 px-4 font-mono text-amber-400">{member.status}</td>
                       <td className="py-2.5 px-4 font-mono text-slate-300">
@@ -290,15 +302,33 @@ export const WorkbenchDrawer: React.FC<WorkbenchDrawerProps> = ({
                         ({member.position.x.toFixed(1)}, {member.position.z.toFixed(1)})
                       </td>
                       <td className="py-2.5 px-4 text-right">
-                        {!member.isLocal && (
+                        <div className="flex items-center justify-end gap-1.5">
                           <button
                             type="button"
-                            onClick={() => onRemoveSimulatedPlayer(member.userId)}
-                            className="px-2.5 py-1 text-xs font-medium bg-rose-950/80 hover:bg-rose-900 text-rose-200 rounded cursor-pointer whitespace-nowrap shrink-0"
+                            onClick={() => onMoveToExtractionZone(member.userId)}
+                            className="px-2 py-1 text-xs font-medium bg-emerald-950/80 hover:bg-emerald-900 text-emerald-200 rounded cursor-pointer whitespace-nowrap shrink-0"
+                            title="Move to Physical Extraction Zone (15, -8)"
                           >
-                            Disconnect
+                            Extract Zone
                           </button>
-                        )}
+                          <button
+                            type="button"
+                            onClick={() => onEliminatePlayer(member.userId)}
+                            className="px-2 py-1 text-xs font-medium bg-amber-950/80 hover:bg-amber-900 text-amber-200 rounded cursor-pointer whitespace-nowrap shrink-0"
+                            title="Simulate death & state-aware respawn in Recovery Bay"
+                          >
+                            Eliminate
+                          </button>
+                          {!member.isLocal && (
+                            <button
+                              type="button"
+                              onClick={() => onRemoveSimulatedPlayer(member.userId)}
+                              className="px-2 py-1 text-xs font-medium bg-rose-950/80 hover:bg-rose-900 text-rose-200 rounded cursor-pointer whitespace-nowrap shrink-0"
+                            >
+                              Leave
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -312,12 +342,19 @@ export const WorkbenchDrawer: React.FC<WorkbenchDrawerProps> = ({
           <div className="space-y-5">
             <div className="p-4 border border-slate-800 rounded-lg bg-slate-950 space-y-3">
               <div className="text-sm font-semibold text-slate-100">
-                SecurityService Exploit &amp; Validation Test Harness
+                SecurityService &amp; MovementService Exploit Test Harness
               </div>
               <p className="text-xs text-slate-400">
-                Trigger malformed or unauthorized client requests below to verify that ServerScriptService.Services.SecurityService and domain services reject them.
+                Trigger malformed client requests or speed-hack displacements below to verify that SecurityService, MovementService, and domain services reject or rubberband them.
               </p>
               <div className="flex flex-wrap gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => onRunSecurityTest('speedHack')}
+                  className="px-3 py-2 text-xs font-medium bg-amber-500/20 border border-amber-500/50 hover:bg-amber-500/30 text-amber-200 rounded cursor-pointer whitespace-nowrap shrink-0"
+                >
+                  Test Speed Exploit Rubberband (+80 Studs)
+                </button>
                 <button
                   type="button"
                   onClick={() => onRunSecurityTest('invalidItem')}

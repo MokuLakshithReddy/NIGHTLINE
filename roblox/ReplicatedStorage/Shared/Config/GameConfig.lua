@@ -42,10 +42,18 @@ local GameConfig = {
 		RESULTS = 30,
 	}) :: RoundDurationsMap,
 
-	-- Character & Movement Settings
+	-- Character & Movement Settings (Issue 03: Server-owned sprint & movement validation)
 	WALK_SPEED = 14,
 	SPRINT_SPEED = 22,
+	MOVEMENT_SPEED_TOLERANCE = 8, -- Tolerance buffer for network jitter before rubberbanding
+	MOVEMENT_CHECK_INTERVAL = 0.25,
+	SPRINT_COOLDOWN_SECONDS = 0.1,
 	DEFAULT_MAX_HEALTH = 100,
+
+	-- Physical Extraction Platform Settings (Issue 04: Physical extraction zone validation)
+	EXTRACTION_ZONE_POSITION = Vector3.new(15, 2.5, -8),
+	EXTRACTION_ZONE_SIZE = Vector3.new(8, 8, 18),
+	EXTRACTION_ZONE_RADIUS = 13.0,
 
 	-- Security & Interaction Thresholds (Section 6.2 & Section 11.1)
 	MAX_INTERACTION_DISTANCE = 14.0,
@@ -56,7 +64,9 @@ local GameConfig = {
 	-- CollectionService Tags (Section 6.2 & Section 9.3)
 	Tags = table.freeze({
 		HubSpawn = "NightlineHubSpawn",
+		EliminatedSpawn = "NightlineEliminatedSpawn",
 		BoardingZone = "NightlineBoardingZone",
+		ExtractionZone = "NightlineExtractionZone",
 		EquipmentLocker = "NightlineEquipmentLocker",
 		DestinationTerminal = "NightlineDestinationTerminal",
 	}),

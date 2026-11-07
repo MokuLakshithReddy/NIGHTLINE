@@ -1,8 +1,9 @@
 # Rokit / Aftman toolchain manifest for NIGHTLINE: LAST TRAIN
 # Install tools locally with: `rokit install` or `aftman install`
+# Updated to Rojo 7.7.1+ per Roblox November 2026 serialization specification.
 
 [tools]
-rojo = "rojo-rbx/rojo@7.4.4"
-stylua = "JohnnyMorganz/StyLua@2.0.2"
-selene = "Kampfkarren/selene@0.27.1"
-luau-lsp = "JohnnyMorganz/luau-lsp@1.36.1"
+rojo = "rojo-rbx/rojo@7.7.1"
+stylua = "JohnnyMorganz/StyLua@2.6.0"
+selene = "Kampfkarren/selene@0.32.0"
+luau-lsp = "JohnnyMorganz/luau-lsp@1.70.1"

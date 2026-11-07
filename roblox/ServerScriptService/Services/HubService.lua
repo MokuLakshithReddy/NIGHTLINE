@@ -2,11 +2,10 @@
 --[[
 	HubService.lua
 	Constructs and maintains the navigable Train Hub inside Workspace.World.Hub (Milestone 1).
-	Creates:
-	- Train Carriages (Command Car & Crew/Equipment Car) with windows, lighting, and signage.
-	- 6 Hub Spawn Pads inside the Crew Car.
-	- Tagged interactive terminals (Destination Vote Console, Equipment Locker, Boarding Gate) with ProximityPrompts.
-	- Safe player spawning and return-to-hub positioning.
+	Responsibilities:
+	- Explicit 1..6 Spawn-Slot Allocation and release on player departure (Issue 02).
+	- State-aware player spawning: Hub Spawns, Boarding Bay, Active Station Entry, and Eliminated Recovery Bay (Issue 01).
+	- Physical Extraction Platform Zone construction and server-side proximity/bounds validation (Issue 04).
 ]]
 
 local CollectionService = game:GetService("CollectionService")
@@ -15,7 +14,7 @@ local Workspace = game:GetService("Workspace")
 
 local GameConfig = require(ReplicatedStorage.Shared.Config.GameConfig)
 
-local HubService = {
+local HubService: { [string]: any } = {
 	Name = "HubService",
 	_worldFolder = nil :: Folder?,
 	_hubFolder = nil :: Folder?,
@@ -25,6 +24,11 @@ local HubService = {
 	_activeStationFolder = nil :: Folder?,
 	_spawnParts = {} :: { BasePart },
 	_boardingSpawnParts = {} :: { BasePart },
+	_eliminatedSpawnParts = {} :: { BasePart },
+	_extractionZonePart = nil :: BasePart?,
+	_allocatedSlots = {} :: { [number]: number }, -- slotIndex (1..6) -> userId
+	_playerSlots = {} :: { [number]: number }, -- userId -> slotIndex (1..6)
+	_movementService = nil :: any,
 }
 
 local function createPart(props: {
@@ -53,12 +57,55 @@ local function createPart(props: {
 end
 
 function HubService:Init()
+	table.clear(self._allocatedSlots)
+	table.clear(self._playerSlots)
 	self:_ensureWorkspaceHierarchy()
 	self:_buildTrainHubGeometry()
 end
 
+function HubService:SetMovementService(movementService: any)
+	self._movementService = movementService
+end
+
 function HubService:Start()
 	-- Hub geometry is ready before players join
+end
+
+-- Issue 02: Explicit Spawn-Slot Allocation System
+function HubService:AllocateSpawnSlot(userId: number): number
+	local existingSlot = self._playerSlots[userId]
+	if existingSlot then
+		return existingSlot
+	end
+
+	for slotIndex = 1, GameConfig.MAX_PLAYERS_PER_SERVER do
+		if self._allocatedSlots[slotIndex] == nil then
+			self._allocatedSlots[slotIndex] = userId
+			self._playerSlots[userId] = slotIndex
+			return slotIndex
+		end
+	end
+
+	-- Fallback if server exceeds nominal capacity
+	local fallbackSlot = ((userId - 1) % GameConfig.MAX_PLAYERS_PER_SERVER) + 1
+	self._playerSlots[userId] = fallbackSlot
+	return fallbackSlot
+end
+
+function HubService:ReleaseSpawnSlot(userId: number)
+	local slotIndex = self._playerSlots[userId]
+	if slotIndex and self._allocatedSlots[slotIndex] == userId then
+		self._allocatedSlots[slotIndex] = nil
+	end
+	self._playerSlots[userId] = nil
+end
+
+function HubService:GetPlayerSpawnSlot(userId: number): number
+	return self._playerSlots[userId] or self:AllocateSpawnSlot(userId)
+end
+
+function HubService:GetAllocatedSlotMap(): { [number]: number }
+	return table.clone(self._allocatedSlots)
 end
 
 function HubService:_ensureWorkspaceHierarchy()
@@ -116,13 +163,14 @@ function HubService:_buildTrainHubGeometry()
 	local spawns = self._spawnsFolder
 	assert(train and spawns, "HubService hierarchy not initialized")
 
-	-- Clear any previous procedural hub parts to keep idempotency
 	train:ClearAllChildren()
 	spawns:ClearAllChildren()
 	table.clear(self._spawnParts)
 	table.clear(self._boardingSpawnParts)
+	table.clear(self._eliminatedSpawnParts)
+	self._extractionZonePart = nil
 
-	-- Train Hub Floor (80 studs long along Z, 22 studs wide along X)
+	-- Train Hub Floor (84 studs long along Z, 22 studs wide along X)
 	local floor = createPart({
 		name = "TrainFloor",
 		size = Vector3.new(22, 1.5, 84),
@@ -133,7 +181,6 @@ function HubService:_buildTrainHubGeometry()
 	})
 	train.PrimaryPart = floor
 
-	-- Roof with warm industrial lighting strips
 	createPart({
 		name = "TrainRoof",
 		size = Vector3.new(22, 1, 84),
@@ -143,7 +190,6 @@ function HubService:_buildTrainHubGeometry()
 		parent = train,
 	})
 
-	-- Left and Right Carriage Walls
 	createPart({
 		name = "WallLeft",
 		size = Vector3.new(1, 12, 84),
@@ -161,7 +207,6 @@ function HubService:_buildTrainHubGeometry()
 		parent = train,
 	})
 
-	-- Front Bulkhead (Locomotive End at Z = -41.5) & Rear Bulkhead (Z = 41.5)
 	createPart({
 		name = "BulkheadFront",
 		size = Vector3.new(22, 12, 1),
@@ -179,7 +224,6 @@ function HubService:_buildTrainHubGeometry()
 		parent = train,
 	})
 
-	-- Interior Warm Light Fixtures
 	for zOffset = -30, 30, 20 do
 		local lightFixture = createPart({
 			name = string.format("CeilingLamp_%d", zOffset),
@@ -197,7 +241,7 @@ function HubService:_buildTrainHubGeometry()
 		pointLight.Parent = lightFixture
 	end
 
-	-- 1. Destination Console (Front Command Zone, Z = -32)
+	-- 1. Destination Console (Front Command Zone, Z = -34)
 	local destinationConsole = createPart({
 		name = "DestinationConsole",
 		size = Vector3.new(6, 4.5, 2.5),
@@ -220,7 +264,7 @@ function HubService:_buildTrainHubGeometry()
 	destinationPrompt.RequiresLineOfSight = false
 	destinationPrompt.Parent = destinationConsole
 
-	-- 2. Equipment Lockers (Left Wall, Z = -10 and Z = -4)
+	-- 2. Equipment Lockers (Left Wall, Z = -12 and Z = -4)
 	local lockerItems = {
 		{ id = "Flashlight", label = "Equip Service Flashlight (Slot 1)", z = -12, slot = 1 },
 		{ id = "Flare", label = "Equip Acoustic Flare (Slot 2)", z = -4, slot = 2 },
@@ -272,7 +316,7 @@ function HubService:_buildTrainHubGeometry()
 	boardingPrompt.RequiresLineOfSight = false
 	boardingPrompt.Parent = boardingGate
 
-	-- 4. Six Player Hub Spawns (Z = 10 to 32)
+	-- 4. Six Player Hub Spawns (Z = 12 to 32)
 	local spawnOffsets = {
 		Vector3.new(-5, 2.5, 12),
 		Vector3.new(5, 2.5, 12),
@@ -320,6 +364,78 @@ function HubService:_buildTrainHubGeometry()
 		})
 		table.insert(self._boardingSpawnParts, marker)
 	end
+
+	-- 6. Eliminated Recovery Berths in Rear Hub Bay (Issue 01: State-aware respawn for eliminated players)
+	local eliminatedOffsets = {
+		Vector3.new(-7, 2.5, 36),
+		Vector3.new(-3, 2.5, 36),
+		Vector3.new(0, 2.5, 36),
+		Vector3.new(3, 2.5, 36),
+		Vector3.new(7, 2.5, 36),
+		Vector3.new(0, 2.5, 38),
+	}
+	for index, offset in ipairs(eliminatedOffsets) do
+		local berth = createPart({
+			name = string.format("EliminatedRecoveryBerth_%02d", index),
+			size = Vector3.new(2.5, 0.2, 2.5),
+			cframe = CFrame.new(offset),
+			color = Color3.fromRGB(244, 63, 94),
+			material = Enum.Material.SmoothPlastic,
+			transparency = 0.5,
+			canCollide = false,
+			parent = train,
+		})
+		CollectionService:AddTag(berth, GameConfig.Tags.EliminatedSpawn)
+		table.insert(self._eliminatedSpawnParts, berth)
+	end
+
+	-- 7. Physical Extraction Platform Zone adjacent to Boarding Gate (Issue 04)
+	local extractionZone = createPart({
+		name = "ExtractionPlatformZone",
+		size = GameConfig.EXTRACTION_ZONE_SIZE,
+		cframe = CFrame.new(GameConfig.EXTRACTION_ZONE_POSITION),
+		color = Color3.fromRGB(16, 185, 129),
+		material = Enum.Material.Neon,
+		transparency = 0.65,
+		canCollide = false,
+		parent = train,
+	})
+	CollectionService:AddTag(extractionZone, GameConfig.Tags.ExtractionZone)
+
+	local extractionPrompt = Instance.new("ProximityPrompt")
+	extractionPrompt.Name = "ExtractionPlatformPrompt"
+	extractionPrompt.ActionText = "Extract to Train"
+	extractionPrompt.ObjectText = "Station 001 Extraction Platform"
+	extractionPrompt.KeyboardKeyCode = Enum.KeyCode.E
+	extractionPrompt.GamepadKeyCode = Enum.KeyCode.ButtonX
+	extractionPrompt.MaxActivationDistance = GameConfig.EXTRACTION_ZONE_RADIUS
+	extractionPrompt.HoldDuration = 0
+	extractionPrompt.RequiresLineOfSight = false
+	extractionPrompt.Parent = extractionZone
+
+	self._extractionZonePart = extractionZone
+end
+
+function HubService:_pivotPlayerSafely(player: Player, targetCFrame: CFrame, resetHealth: boolean)
+	local character = player.Character
+	if not character then
+		return
+	end
+	local rootPart = character:FindFirstChild("HumanoidRootPart")
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		humanoid.WalkSpeed = GameConfig.WALK_SPEED
+		if resetHealth then
+			humanoid.MaxHealth = GameConfig.DEFAULT_MAX_HEALTH
+			humanoid.Health = GameConfig.DEFAULT_MAX_HEALTH
+		end
+	end
+	if rootPart and rootPart:IsA("BasePart") then
+		if self._movementService then
+			self._movementService:NotifyServerTeleport(player, targetCFrame.Position)
+		end
+		character:PivotTo(targetCFrame)
+	end
 end
 
 function HubService:SpawnPlayerInHub(player: Player, slotIndex: number?)
@@ -327,22 +443,30 @@ function HubService:SpawnPlayerInHub(player: Player, slotIndex: number?)
 	if spawnCount == 0 then
 		return
 	end
-	local chosenIndex = ((slotIndex or 1) - 1) % spawnCount + 1
+	local resolvedSlot = slotIndex or self:GetPlayerSpawnSlot(player.UserId)
+	local chosenIndex = ((resolvedSlot - 1) % spawnCount) + 1
 	local spawnPad = self._spawnParts[chosenIndex]
+	self:_pivotPlayerSafely(player, spawnPad.CFrame + Vector3.new(0, 3, 0), true)
+end
 
-	local character = player.Character
-	if character then
-		local rootPart = character:FindFirstChild("HumanoidRootPart")
-		local humanoid = character:FindFirstChildOfClass("Humanoid")
-		if humanoid then
-			humanoid.WalkSpeed = GameConfig.WALK_SPEED
-			humanoid.MaxHealth = GameConfig.DEFAULT_MAX_HEALTH
-			humanoid.Health = GameConfig.DEFAULT_MAX_HEALTH
-		end
-		if rootPart and rootPart:IsA("BasePart") then
-			character:PivotTo(spawnPad.CFrame + Vector3.new(0, 3, 0))
-		end
+-- Issue 01: Eliminated players respawn into the Hub Recovery Bay and cannot re-enter the active station
+function HubService:SpawnEliminatedPlayerInHub(player: Player, slotIndex: number?)
+	local count = #self._eliminatedSpawnParts
+	if count == 0 then
+		self:SpawnPlayerInHub(player, slotIndex)
+		return
 	end
+	local resolvedSlot = slotIndex or self:GetPlayerSpawnSlot(player.UserId)
+	local berth = self._eliminatedSpawnParts[((resolvedSlot - 1) % count) + 1]
+	self:_pivotPlayerSafely(player, berth.CFrame + Vector3.new(0, 3, 0), true)
+end
+
+-- Issue 01: Active expedition players spawning/arriving at Station 001 platform
+function HubService:SpawnPlayerInActiveStation(player: Player, slotIndex: number?)
+	local resolvedSlot = slotIndex or self:GetPlayerSpawnSlot(player.UserId)
+	local zOffset = -16 + ((resolvedSlot - 1) * 3)
+	local targetCFrame = CFrame.new(Vector3.new(15, 3, zOffset))
+	self:_pivotPlayerSafely(player, targetCFrame, false)
 end
 
 function HubService:MoveCrewToBoardingBay(players: { Player })
@@ -350,19 +474,47 @@ function HubService:MoveCrewToBoardingBay(players: { Player })
 	if count == 0 then
 		return
 	end
-	for index, player in ipairs(players) do
-		local character = player.Character
-		if character then
-			local marker = self._boardingSpawnParts[((index - 1) % count) + 1]
-			character:PivotTo(marker.CFrame + Vector3.new(0, 3, 0))
-		end
+	for _, player in ipairs(players) do
+		local slotIndex = self:GetPlayerSpawnSlot(player.UserId)
+		local marker = self._boardingSpawnParts[((slotIndex - 1) % count) + 1]
+		self:_pivotPlayerSafely(player, marker.CFrame + Vector3.new(0, 3, 0), false)
 	end
 end
 
 function HubService:ReturnAllPlayersToHub(players: { Player })
-	for index, player in ipairs(players) do
-		self:SpawnPlayerInHub(player, index)
+	for _, player in ipairs(players) do
+		local slotIndex = self:GetPlayerSpawnSlot(player.UserId)
+		self:SpawnPlayerInHub(player, slotIndex)
 	end
+end
+
+-- Issue 04: Physical Extraction Zone validation on the server
+function HubService:GetExtractionZonePart(): BasePart?
+	return self._extractionZonePart
+end
+
+function HubService:IsPlayerInExtractionZone(player: Player): boolean
+	local character = player.Character
+	if not character or not character.Parent then
+		return false
+	end
+	local rootPart = character:FindFirstChild("HumanoidRootPart")
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if not rootPart or not rootPart:IsA("BasePart") or not humanoid or humanoid.Health <= 0 then
+		return false
+	end
+
+	local zoneCenter = if self._extractionZonePart
+		then self._extractionZonePart.Position
+		else GameConfig.EXTRACTION_ZONE_POSITION
+
+	local horizontalDist = Vector3.new(
+		rootPart.Position.X - zoneCenter.X,
+		0,
+		rootPart.Position.Z - zoneCenter.Z
+	).Magnitude
+
+	return horizontalDist <= GameConfig.EXTRACTION_ZONE_RADIUS
 end
 
 function HubService:ClearRuntimeStation()

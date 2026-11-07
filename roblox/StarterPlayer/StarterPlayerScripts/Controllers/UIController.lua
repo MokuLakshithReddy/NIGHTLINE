@@ -19,7 +19,7 @@ local NetworkTypes = require(ReplicatedStorage.Shared.Types.NetworkTypes)
 local ObjectiveConfig = require(ReplicatedStorage.Shared.Config.ObjectiveConfig)
 local StationConfig = require(ReplicatedStorage.Shared.Config.StationConfig)
 
-local UIController = {
+local UIController: { [string]: any } = {
 	Name = "UIController",
 	_remotes = nil :: { [string]: RemoteEvent }?,
 	_screenGui = nil :: ScreenGui?,
@@ -50,17 +50,21 @@ function UIController:Start()
 	local remotes = self._remotes
 	assert(remotes, "UIController requires remotes initialized")
 
-	remotes.RoundStateChanged.OnClientEvent:Connect(function(payload: NetworkTypes.RoundStatePayload)
-		self:_onRoundStateChanged(payload)
-	end)
+	remotes.RoundStateChanged.OnClientEvent:Connect(
+		function(payload: NetworkTypes.RoundStatePayload)
+			self:_onRoundStateChanged(payload)
+		end
+	)
 
 	remotes.ObjectiveUpdated.OnClientEvent:Connect(function(payload: NetworkTypes.ObjectivePayload)
 		self:_onObjectiveUpdated(payload)
 	end)
 
-	remotes.PlayerStatusUpdated.OnClientEvent:Connect(function(roster: { NetworkTypes.PlayerStatusSummary })
-		self:_onPlayerStatusUpdated(roster)
-	end)
+	remotes.PlayerStatusUpdated.OnClientEvent:Connect(
+		function(roster: { NetworkTypes.PlayerStatusSummary })
+			self:_onPlayerStatusUpdated(roster)
+		end
+	)
 
 	remotes.InventoryUpdated.OnClientEvent:Connect(function(payload: NetworkTypes.InventoryPayload)
 		self:_onInventoryUpdated(payload)
@@ -298,7 +302,8 @@ function UIController:_onPlayerStatusUpdated(roster: { NetworkTypes.PlayerStatus
 		row.TextColor3 = Color3.fromRGB(241, 245, 249)
 		row.TextScaled = true
 		row.TextXAlignment = Enum.TextXAlignment.Left
-		row.Text = string.format("  %s · %s (HP %d)", member.displayName, member.status, member.health)
+		row.Text =
+			string.format("  %s · %s (HP %d)", member.displayName, member.status, member.health)
 		row.Parent = crewFrame
 	end
 end
@@ -312,7 +317,9 @@ function UIController:_refreshSlotButtons()
 	local slots = self._inventory.equipmentSlots
 	if self._slot1Button then
 		local item1 = slots[1]
-		local name1 = if item1 and ItemConfig.Items[item1] then ItemConfig.Items[item1].displayName else "Empty (Equip Flashlight)"
+		local name1 = if item1 and ItemConfig.Items[item1]
+			then ItemConfig.Items[item1].displayName
+			else "Empty (Equip Flashlight)"
 		self._slot1Button.Text = string.format("[1] %s", name1)
 		self._slot1Button.BackgroundColor3 = if self._activeSlot == 1
 			then Color3.fromRGB(37, 99, 235)
@@ -320,7 +327,9 @@ function UIController:_refreshSlotButtons()
 	end
 	if self._slot2Button then
 		local item2 = slots[2]
-		local name2 = if item2 and ItemConfig.Items[item2] then ItemConfig.Items[item2].displayName else "Empty (Equip Flare)"
+		local name2 = if item2 and ItemConfig.Items[item2]
+			then ItemConfig.Items[item2].displayName
+			else "Empty (Equip Flare)"
 		self._slot2Button.Text = string.format("[2] %s", name2)
 		self._slot2Button.BackgroundColor3 = if self._activeSlot == 2
 			then Color3.fromRGB(37, 99, 235)

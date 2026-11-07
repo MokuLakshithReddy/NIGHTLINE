@@ -23,6 +23,8 @@ export type PlayerRoundStatus =
 	| "ELIMINATED"
 	| "DISCONNECTED"
 
+export type RoundOutcome = "PENDING" | "SUCCESS" | "FAILED"
+
 export type StationId = "Station001"
 
 export type MissionTemplateId = "RestorePower" | "RecoverCargo" | "RepairSignal"
@@ -42,6 +44,7 @@ export type RoundStatePayload = {
 	activeCrewCount: number,
 	boardedCrewCount: number,
 	roundNumber: number,
+	lastOutcome: RoundOutcome?,
 }
 
 export type ObjectivePayload = {

@@ -5,7 +5,13 @@
 	Tracks Instances, RBXScriptConnections, custom Connections, threads, and cleanup callbacks.
 ]]
 
-export type CleanableTask = Instance | RBXScriptConnection | thread | (() -> ()) | { Disconnect: (self: any) -> () } | { Destroy: (self: any) -> () }
+export type CleanableTask =
+	Instance
+	| RBXScriptConnection
+	| thread
+	| (() -> ())
+	| { Disconnect: (self: any) -> () }
+	| { Destroy: (self: any) -> () }
 
 export type JanitorObject = {
 	Add: <T>(self: JanitorObject, object: T) -> T,
@@ -32,7 +38,7 @@ end
 function Janitor:Cleanup()
 	local tasks = self._tasks
 	for index = #tasks, 1, -1 do
-		local item = tasks[index]
+		local item: any = tasks[index]
 		tasks[index] = nil
 
 		local itemType = typeof(item)

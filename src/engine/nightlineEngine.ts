@@ -1,9 +1,11 @@
-/**
- * nightlineEngine.ts
- * Authoritative TypeScript mirror of the NIGHTLINE: LAST TRAIN Luau Server Services
- * (SecurityService, HubService, InventoryService, RoundService, InteractionService).
- * Used for both deterministic unit testing (`node:test`) and the interactive Train Hub Studio Workbench.
- */
+// nightlineEngine.ts
+// Interactive TypeScript Workbench Mirror of the NIGHTLINE: LAST TRAIN Luau Server Services
+// (SecurityService, MovementService, HubService, InventoryService, RoundService, InteractionService).
+//
+// NOTE: Automated Luau verification in `src/engine/nightline.test.ts` executes the ACTUAL
+// `/roblox/` Luau modules inside the official Luau VM (`luau`) and validates them with
+// `luau-lsp analyze`, `selene`, `stylua --check`, and `rojo build`. This TypeScript engine
+// powers the browser-based Train Hub Studio Workbench UI on port 3000.
 
 export type RoundState =
   | 'WAITING'
@@ -23,13 +25,15 @@ export type PlayerRoundStatus =
   | 'ELIMINATED'
   | 'DISCONNECTED';
 
+export type RoundOutcome = 'PENDING' | 'SUCCESS' | 'FAILED';
+
 export type StationId = 'Station001';
 export type MissionTemplateId = 'RestorePower' | 'RecoverCargo' | 'RepairSignal';
 export type EquipmentItemId = 'Flashlight' | 'Flare';
 export type NotificationSeverity = 'Info' | 'Warning' | 'Success' | 'Danger';
 
 export interface Vec2 {
-  x: number; // X in Roblox studs (-11 to +11 across train width)
+  x: number; // X in Roblox studs (-11 to +19 across train & adjacent extraction platform)
   z: number; // Z in Roblox studs (-42 front locomotive bulkhead to +42 rear bulkhead)
 }
 
@@ -38,7 +42,11 @@ export interface HubInteractable {
   name: string;
   objectText: string;
   actionText: string;
-  tag: 'NightlineDestinationTerminal' | 'NightlineEquipmentLocker' | 'NightlineBoardingZone';
+  tag:
+    | 'NightlineDestinationTerminal'
+    | 'NightlineEquipmentLocker'
+    | 'NightlineBoardingZone'
+    | 'NightlineExtractionZone';
   position: Vec2;
   size: { w: number; d: number };
   stationId?: StationId;
@@ -50,10 +58,12 @@ export interface PlayerEntity {
   userId: number;
   name: string;
   displayName: string;
+  spawnSlot: number; // Explicit 1..6 slot allocated by HubService
   position: Vec2;
   velocity: Vec2;
   facingAngle: number;
   isSprinting: boolean;
+  walkSpeed: number;
   health: number;
   maxHealth: number;
   status: PlayerRoundStatus;
@@ -89,7 +99,9 @@ export interface RemoteLogEntry {
     | 'Notification'
     | 'RequestEquipment'
     | 'RequestDestinationVote'
-    | 'PromptTriggered';
+    | 'RequestSprint'
+    | 'PromptTriggered'
+    | 'MovementCheck';
   actorName: string;
   accepted: boolean;
   reason: string;
@@ -98,7 +110,7 @@ export interface RemoteLogEntry {
 
 export const GAME_CONFIG = {
   GAME_TITLE: 'NIGHTLINE: LAST TRAIN',
-  VERSION: '0.1.0-milestone1',
+  VERSION: '0.1.1-milestone1-hardened',
   MAX_PLAYERS_PER_SERVER: 6,
   MIN_CREW_TO_START: 1,
   EQUIPMENT_SLOTS: 2,
@@ -115,8 +127,14 @@ export const GAME_CONFIG = {
   } satisfies Record<RoundState, number>,
   WALK_SPEED: 14,
   SPRINT_SPEED: 22,
+  MOVEMENT_SPEED_TOLERANCE: 8,
+  MOVEMENT_CHECK_INTERVAL: 0.25,
+  SPRINT_COOLDOWN_SECONDS: 0.1,
   DEFAULT_MAX_HEALTH: 100,
   MAX_INTERACTION_DISTANCE: 14.0,
+  EXTRACTION_ZONE_POSITION: { x: 15, z: -8 } as Vec2,
+  EXTRACTION_ZONE_SIZE: { w: 8, d: 18 },
+  EXTRACTION_ZONE_RADIUS: 13.0,
   PROMPT_COOLDOWN_SECONDS: 0.5,
   EQUIPMENT_COOLDOWN_SECONDS: 0.25,
   REMOTE_RATE_LIMIT_WINDOW: 1.0,
@@ -160,6 +178,15 @@ export const HUB_SPAWN_OFFSETS: Vec2[] = [
   { x: 5, z: 22 },
   { x: -5, z: 32 },
   { x: 5, z: 32 },
+];
+
+export const ELIMINATED_SPAWN_OFFSETS: Vec2[] = [
+  { x: -6, z: 35 },
+  { x: 6, z: 35 },
+  { x: -3, z: 36 },
+  { x: 3, z: 36 },
+  { x: -6, z: 38 },
+  { x: 6, z: 38 },
 ];
 
 export const BOARDING_BAY_OFFSETS: Vec2[] = [
@@ -213,6 +240,15 @@ export const HUB_INTERACTABLES: HubInteractable[] = [
     position: { x: 8.8, z: -8 },
     size: { w: 2.0, d: 8 },
   },
+  {
+    id: 'ExtractionPlatformZone',
+    name: 'ExtractionPlatformZone',
+    objectText: 'Train Extraction Boarding Zone',
+    actionText: 'Board Train for Extraction',
+    tag: 'NightlineExtractionZone',
+    position: { x: 15, z: -8 },
+    size: { w: 8, d: 18 },
+  },
 ];
 
 interface RateBucket {
@@ -227,11 +263,16 @@ export class NightlineServerEngine {
   public phaseRemainingSeconds = 0;
   public selectedStationId: StationId = GAME_CONFIG.DEFAULT_STATION_ID;
   public selectedMissionId: MissionTemplateId = 'RestorePower';
+  public lastOutcome: RoundOutcome = 'PENDING';
   public players: Map<number, PlayerEntity> = new Map();
   public activeExpeditionUserIds: Set<number> = new Set();
   public notifications: NotificationEntry[] = [];
   public remoteLogs: RemoteLogEntry[] = [];
   public runtimeStationObjectsCount = 0;
+
+  // Explicit 1..6 spawn slot allocation (Issue 02)
+  private allocatedSlots: Map<number, number> = new Map(); // slot (1..6) -> userId
+  private playerSlots: Map<number, number> = new Map(); // userId -> slot (1..6)
 
   private nextLogId = 1;
   private nextNotificationId = 1;
@@ -249,8 +290,11 @@ export class NightlineServerEngine {
     this.phaseRemainingSeconds = 0;
     this.selectedStationId = GAME_CONFIG.DEFAULT_STATION_ID;
     this.selectedMissionId = 'RestorePower';
+    this.lastOutcome = 'PENDING';
     this.players.clear();
     this.activeExpeditionUserIds.clear();
+    this.allocatedSlots.clear();
+    this.playerSlots.clear();
     this.notifications = [];
     this.remoteLogs = [];
     this.runtimeStationObjectsCount = 0;
@@ -268,21 +312,61 @@ export class NightlineServerEngine {
     );
   }
 
-  public addPlayer(userId: number, displayName: string, isLocal = false): { ok: boolean; reason: string; player?: PlayerEntity } {
+  // Issue 02: Explicit spawn slot allocator (1..6)
+  public allocateSpawnSlot(userId: number): number {
+    const existing = this.playerSlots.get(userId);
+    if (existing !== undefined) {
+      return existing;
+    }
+
+    for (let slot = 1; slot <= GAME_CONFIG.MAX_PLAYERS_PER_SERVER; slot += 1) {
+      if (!this.allocatedSlots.has(slot)) {
+        this.allocatedSlots.set(slot, userId);
+        this.playerSlots.set(userId, slot);
+        return slot;
+      }
+    }
+
+    const fallbackSlot = ((userId - 1) % GAME_CONFIG.MAX_PLAYERS_PER_SERVER) + 1;
+    this.playerSlots.set(userId, fallbackSlot);
+    return fallbackSlot;
+  }
+
+  public releaseSpawnSlot(userId: number): void {
+    const slot = this.playerSlots.get(userId);
+    if (slot !== undefined) {
+      if (this.allocatedSlots.get(slot) === userId) {
+        this.allocatedSlots.delete(slot);
+      }
+      this.playerSlots.delete(userId);
+    }
+  }
+
+  public getPlayerSpawnSlot(userId: number): number {
+    return this.allocateSpawnSlot(userId);
+  }
+
+  public addPlayer(
+    userId: number,
+    displayName: string,
+    isLocal = false
+  ): { ok: boolean; reason: string; player?: PlayerEntity } {
     if (this.players.size >= GAME_CONFIG.MAX_PLAYERS_PER_SERVER && !this.players.has(userId)) {
       return { ok: false, reason: 'ServerFull' };
     }
 
-    const slotIndex = this.players.size;
-    const spawnOffset = HUB_SPAWN_OFFSETS[slotIndex % HUB_SPAWN_OFFSETS.length];
+    const spawnSlot = this.allocateSpawnSlot(userId);
+    const spawnOffset = HUB_SPAWN_OFFSETS[(spawnSlot - 1) % HUB_SPAWN_OFFSETS.length];
     const player: PlayerEntity = {
       userId,
       name: `Player_${userId}`,
       displayName,
+      spawnSlot,
       position: { x: spawnOffset.x, z: spawnOffset.z },
       velocity: { x: 0, z: 0 },
       facingAngle: Math.PI,
       isSprinting: false,
+      walkSpeed: GAME_CONFIG.WALK_SPEED,
       health: GAME_CONFIG.DEFAULT_MAX_HEALTH,
       maxHealth: GAME_CONFIG.DEFAULT_MAX_HEALTH,
       status: 'HUB_WAITING',
@@ -312,14 +396,14 @@ export class NightlineServerEngine {
       this.pushNotification(
         userId,
         'LateJoinWaiting',
-        `An expedition is currently underway (${this.state}). ${displayName} is safely rostered in the Train Hub for the next departure.`,
+        `An expedition is currently underway (${this.state}). ${displayName} is safely rostered in the Train Hub (Slot #${spawnSlot}) for the next departure.`,
         'Info'
       );
     } else {
       this.pushNotification(
         userId,
         'WelcomeHub',
-        `Welcome aboard NIGHTLINE, ${displayName}. Prepare your 2-slot equipment and confirm route before departure.`,
+        `Welcome aboard NIGHTLINE, ${displayName} (Spawn Slot #${spawnSlot}). Prepare your 2-slot equipment and confirm route before departure.`,
         'Info'
       );
     }
@@ -337,6 +421,7 @@ export class NightlineServerEngine {
     const player = this.players.get(userId);
     if (!player) return;
 
+    this.releaseSpawnSlot(userId);
     this.players.delete(userId);
     this.activeExpeditionUserIds.delete(userId);
     this.rateBuckets.delete(userId);
@@ -359,18 +444,322 @@ export class NightlineServerEngine {
     }
   }
 
+  // Issue 01: Player-state-aware respawning and elimination handling
+  public handleCharacterRespawn(userId: number): { ok: boolean; spawnZone: 'HUB' | 'RECOVERY_BAY' | 'ACTIVE_STATION' } {
+    const player = this.players.get(userId);
+    if (!player) {
+      return { ok: false, spawnZone: 'HUB' };
+    }
+
+    player.health = player.maxHealth;
+    player.isSprinting = false;
+    player.walkSpeed = GAME_CONFIG.WALK_SPEED;
+
+    const slot = this.getPlayerSpawnSlot(userId);
+    const idx = (slot - 1) % HUB_SPAWN_OFFSETS.length;
+
+    if (this.isExpeditionPhase() && this.activeExpeditionUserIds.has(userId)) {
+      if (player.status === 'ELIMINATED') {
+        const recoverySpot = ELIMINATED_SPAWN_OFFSETS[idx];
+        player.position = { x: recoverySpot.x, z: recoverySpot.z };
+        this.pushNotification(
+          userId,
+          'EliminatedRecoverySpawn',
+          'You were eliminated from the active expedition. Standby in the Train Recovery Bay until the round concludes.',
+          'Danger'
+        );
+        return { ok: true, spawnZone: 'RECOVERY_BAY' };
+      }
+
+      if (player.status === 'IN_EXPEDITION' || player.status === 'EXTRACTED') {
+        const stationSpot = BOARDING_BAY_OFFSETS[idx];
+        player.position = { x: stationSpot.x, z: stationSpot.z };
+        return { ok: true, spawnZone: 'ACTIVE_STATION' };
+      }
+    }
+
+    const hubSpot = HUB_SPAWN_OFFSETS[idx];
+    player.position = { x: hubSpot.x, z: hubSpot.z };
+    return { ok: true, spawnZone: 'HUB' };
+  }
+
+  public eliminatePlayer(userId: number, cause = 'FatalDamage'): { ok: boolean; reason: string } {
+    const player = this.players.get(userId);
+    if (!player) {
+      return { ok: false, reason: 'InvalidPlayer' };
+    }
+
+    if (!this.isExpeditionPhase() || !this.activeExpeditionUserIds.has(userId)) {
+      player.health = player.maxHealth;
+      this.handleCharacterRespawn(userId);
+      return { ok: false, reason: 'NotInActiveExpedition' };
+    }
+
+    if (player.status === 'ELIMINATED') {
+      return { ok: false, reason: 'AlreadyEliminated' };
+    }
+
+    player.status = 'ELIMINATED';
+    player.isReady = false;
+    player.isSprinting = false;
+    player.walkSpeed = GAME_CONFIG.WALK_SPEED;
+
+    this.handleCharacterRespawn(userId);
+    this.broadcastPlayerStatusSummary();
+    this.pushNotification(
+      'ALL',
+      'PlayerEliminated',
+      `${player.displayName} was eliminated (${cause}) and moved to the Train Recovery Bay.`,
+      'Danger'
+    );
+
+    if (
+      (this.state === 'EXPLORATION' || this.state === 'EXTRACTION') &&
+      this.countSurvivingExpeditionPlayers() === 0
+    ) {
+      this.lastOutcome = 'FAILED';
+      this.pushNotification(
+        'ALL',
+        'AllCrewEliminated',
+        'All active expedition crew have been eliminated! Emergency departure initiated.',
+        'Danger'
+      );
+      this.enterReturnPhase();
+    }
+
+    return { ok: true, reason: 'Eliminated' };
+  }
+
+  // Issue 03: Server-authoritative sprint & movement sanity checks
+  public handleSprintRequest(
+    userId: number,
+    wantsSprint: unknown
+  ): { ok: boolean; reason: string } {
+    const player = this.players.get(userId);
+    if (!player) {
+      return { ok: false, reason: 'InvalidPlayer' };
+    }
+
+    if (typeof wantsSprint !== 'boolean') {
+      this.logRemote(
+        'Client->Server',
+        'RequestSprint',
+        player.displayName,
+        false,
+        'InvalidPayload',
+        `wantsSprint=${String(wantsSprint)}`
+      );
+      return { ok: false, reason: 'InvalidPayload' };
+    }
+
+    if (!this.checkRateLimit(userId, 'RequestSprint', 12, GAME_CONFIG.REMOTE_RATE_LIMIT_WINDOW)) {
+      this.logRemote(
+        'Client->Server',
+        'RequestSprint',
+        player.displayName,
+        false,
+        'RateLimited',
+        `wantsSprint=${String(wantsSprint)}`
+      );
+      return { ok: false, reason: 'RateLimited' };
+    }
+
+    if (!this.checkAndSetCooldown(userId, 'RequestSprint', GAME_CONFIG.SPRINT_COOLDOWN_SECONDS)) {
+      return { ok: false, reason: 'CooldownActive' };
+    }
+
+    if (player.health <= 0) {
+      player.isSprinting = false;
+      player.walkSpeed = GAME_CONFIG.WALK_SPEED;
+      return { ok: false, reason: 'CharacterDead' };
+    }
+
+    if (player.status === 'ELIMINATED' && this.isExpeditionPhase()) {
+      player.isSprinting = false;
+      player.walkSpeed = GAME_CONFIG.WALK_SPEED;
+      this.logRemote(
+        'Client->Server',
+        'RequestSprint',
+        player.displayName,
+        false,
+        'EliminatedCannotSprint',
+        'Blocked in Recovery Bay'
+      );
+      return { ok: false, reason: 'EliminatedCannotSprint' };
+    }
+
+    player.isSprinting = wantsSprint;
+    player.walkSpeed = wantsSprint ? GAME_CONFIG.SPRINT_SPEED : GAME_CONFIG.WALK_SPEED;
+
+    this.logRemote(
+      'Client->Server',
+      'RequestSprint',
+      player.displayName,
+      true,
+      wantsSprint ? 'SprintEnabled' : 'SprintDisabled',
+      `WalkSpeed=${player.walkSpeed}`
+    );
+
+    return { ok: true, reason: wantsSprint ? 'SprintEnabled' : 'SprintDisabled' };
+  }
+
+  public validatePlayerMovement(
+    userId: number,
+    proposedPosition: Vec2,
+    dtSeconds: number
+  ): { ok: boolean; reason: string; correctedPosition: Vec2 } {
+    const player = this.players.get(userId);
+    if (!player) {
+      return { ok: false, reason: 'InvalidPlayer', correctedPosition: proposedPosition };
+    }
+
+    const validDt = Math.max(0.05, dtSeconds);
+    const dx = proposedPosition.x - player.position.x;
+    const dz = proposedPosition.z - player.position.z;
+    const distance = Math.hypot(dx, dz);
+
+    const maxAllowedSpeed =
+      (player.isSprinting ? GAME_CONFIG.SPRINT_SPEED : GAME_CONFIG.WALK_SPEED) +
+      GAME_CONFIG.MOVEMENT_SPEED_TOLERANCE;
+    const maxAllowedDistance = maxAllowedSpeed * validDt + 2.5;
+
+    if (distance > maxAllowedDistance) {
+      this.logRemote(
+        'Server->Client',
+        'MovementCheck',
+        player.displayName,
+        false,
+        'SpeedAnomalyRubberbanded',
+        `dist=${distance.toFixed(1)} > max=${maxAllowedDistance.toFixed(1)} studs`
+      );
+      this.pushNotification(
+        userId,
+        'MovementRubberbanded',
+        `Server MovementService rejected anomalous displacement (${distance.toFixed(1)} studs in ${validDt.toFixed(2)}s) and rubberbanded character.`,
+        'Warning'
+      );
+      return {
+        ok: false,
+        reason: 'SpeedAnomalyRubberbanded',
+        correctedPosition: { ...player.position },
+      };
+    }
+
+    player.position = { ...proposedPosition };
+    return {
+      ok: true,
+      reason: 'ValidMovement',
+      correctedPosition: { ...player.position },
+    };
+  }
+
+  // Issue 04: Physical Extraction Platform Zone validation
+  public isPlayerInExtractionZone(userId: number): boolean {
+    const player = this.players.get(userId);
+    if (!player || player.health <= 0) {
+      return false;
+    }
+
+    const dx = player.position.x - GAME_CONFIG.EXTRACTION_ZONE_POSITION.x;
+    const dz = player.position.z - GAME_CONFIG.EXTRACTION_ZONE_POSITION.z;
+    const horizontalDist = Math.hypot(dx, dz);
+    return horizontalDist <= GAME_CONFIG.EXTRACTION_ZONE_RADIUS;
+  }
+
+  public movePlayerToExtractionZone(userId: number): { ok: boolean; reason: string } {
+    const player = this.players.get(userId);
+    if (!player) {
+      return { ok: false, reason: 'InvalidPlayer' };
+    }
+
+    const slot = this.getPlayerSpawnSlot(userId);
+    const zOffset = ((slot - 1) % 3) * 3 - 3;
+    player.position = {
+      x: GAME_CONFIG.EXTRACTION_ZONE_POSITION.x,
+      z: GAME_CONFIG.EXTRACTION_ZONE_POSITION.z + zOffset,
+    };
+
+    if (this.state === 'EXTRACTION' && player.status === 'IN_EXPEDITION') {
+      return this.tryExtractPlayer(userId);
+    }
+
+    return { ok: true, reason: 'MovedToExtractionZone' };
+  }
+
+  public tryExtractPlayer(userId: number): { ok: boolean; reason: string } {
+    const player = this.players.get(userId);
+    if (!player) {
+      return { ok: false, reason: 'NotRegistered' };
+    }
+
+    if (this.state !== 'EXTRACTION') {
+      this.pushNotification(
+        userId,
+        'ExtractionNotActive',
+        'Extraction doors are only open during the Extraction phase.',
+        'Warning'
+      );
+      return { ok: false, reason: 'InvalidPhase' };
+    }
+
+    if (!this.activeExpeditionUserIds.has(userId)) {
+      return { ok: false, reason: 'NotInActiveExpedition' };
+    }
+
+    if (player.status === 'ELIMINATED') {
+      this.pushNotification(
+        userId,
+        'EliminatedCannotExtract',
+        'Eliminated players cannot extract from the active expedition.',
+        'Danger'
+      );
+      return { ok: false, reason: 'PlayerEliminated' };
+    }
+
+    if (player.status === 'EXTRACTED') {
+      return { ok: true, reason: 'AlreadyExtracted' };
+    }
+
+    if (player.health <= 0) {
+      return { ok: false, reason: 'CharacterDead' };
+    }
+
+    if (!this.isPlayerInExtractionZone(userId)) {
+      this.pushNotification(
+        userId,
+        'NotInExtractionZone',
+        'You must stand inside the physical Extraction Boarding Zone to extract!',
+        'Warning'
+      );
+      return { ok: false, reason: 'OutOfExtractionZone' };
+    }
+
+    player.status = 'EXTRACTED';
+    this.broadcastPlayerStatusSummary();
+    this.pushNotification(
+      userId,
+      'PlayerExtracted',
+      'You have boarded the extraction train safely!',
+      'Success'
+    );
+
+    return { ok: true, reason: 'Extracted' };
+  }
+
   public stepSimulation(dtSeconds: number): void {
     const validDt = Math.max(0, dtSeconds);
     this.clockSeconds += validDt;
 
-    // Move characters inside Train Hub boundaries (-8.8 <= x <= 8.8, -38.5 <= z <= 38.5)
+    // Move characters inside Train Hub & adjacent Extraction Platform boundaries (-8.8 <= x <= 18.0, -38.5 <= z <= 38.5)
     const moveStep = Math.min(validDt, 0.1);
     for (const player of this.players.values()) {
       if (player.velocity.x !== 0 || player.velocity.z !== 0) {
-        const speed = player.isSprinting ? GAME_CONFIG.SPRINT_SPEED : GAME_CONFIG.WALK_SPEED;
+        const speed = player.walkSpeed;
         const nextX = player.position.x + player.velocity.x * speed * moveStep;
         const nextZ = player.position.z + player.velocity.z * speed * moveStep;
-        player.position.x = Math.max(-8.8, Math.min(8.8, nextX));
+        const maxX =
+          this.state === 'EXPLORATION' || this.state === 'EXTRACTION' ? 18.0 : 8.8;
+        player.position.x = Math.max(-8.8, Math.min(maxX, nextX));
         player.position.z = Math.max(-38.5, Math.min(38.5, nextZ));
         player.facingAngle = Math.atan2(player.velocity.x, -player.velocity.z);
       }
@@ -429,6 +818,7 @@ export class NightlineServerEngine {
     this.roundNumber += 1;
     const missionIndex = (this.roundNumber - 1) % ORDERED_MISSION_IDS.length;
     this.selectedMissionId = ORDERED_MISSION_IDS[missionIndex];
+    this.lastOutcome = 'PENDING';
 
     for (const player of this.players.values()) {
       player.status = 'HUB_WAITING';
@@ -492,11 +882,12 @@ export class NightlineServerEngine {
       return;
     }
 
-    // Move departing crew to forward boarding spots inside the carriage
-    departingPlayers.forEach((player, idx) => {
-      const spot = BOARDING_BAY_OFFSETS[idx % BOARDING_BAY_OFFSETS.length];
+    // Move departing crew to their slot's forward boarding spot inside the carriage
+    for (const player of departingPlayers) {
+      const slot = this.getPlayerSpawnSlot(player.userId);
+      const spot = BOARDING_BAY_OFFSETS[(slot - 1) % BOARDING_BAY_OFFSETS.length];
       player.position = { x: spot.x, z: spot.z };
-    });
+    }
 
     this.transitionTo('TRAVEL', GAME_CONFIG.RoundDurations.TRAVEL);
     this.broadcastPlayerStatusSummary();
@@ -525,26 +916,63 @@ export class NightlineServerEngine {
     this.pushNotification(
       'ALL',
       'ExtractionWarning',
-      'Departure horn sounded! Return to the extraction platform within 60 seconds!',
+      'Departure horn sounded! Reach the green Extraction Platform Zone (X=15, Z=-8) within 60 seconds!',
       'Danger'
     );
   }
 
+  // Issue 04: Validate physical extraction zone proximity & survival instead of auto-extracting everyone
   public enterReturnPhase(): void {
+    let extractedCount = 0;
+    let eliminatedCount = 0;
+
     for (const userId of this.activeExpeditionUserIds) {
       const player = this.players.get(userId);
-      if (player && player.status === 'IN_EXPEDITION') {
-        player.status = 'EXTRACTED';
+      if (!player) continue;
+
+      if (player.status === 'EXTRACTED') {
+        if (player.health > 0) {
+          extractedCount += 1;
+        } else {
+          player.status = 'ELIMINATED';
+          eliminatedCount += 1;
+          this.handleCharacterRespawn(userId);
+        }
+      } else if (player.status === 'IN_EXPEDITION') {
+        if (player.health > 0 && this.isPlayerInExtractionZone(userId)) {
+          player.status = 'EXTRACTED';
+          extractedCount += 1;
+          this.pushNotification(
+            userId,
+            'PlayerExtractedOnDeparture',
+            'You were inside the Extraction Boarding Zone when the train departed!',
+            'Success'
+          );
+        } else {
+          player.status = 'ELIMINATED';
+          eliminatedCount += 1;
+          this.handleCharacterRespawn(userId);
+          this.pushNotification(
+            userId,
+            'LeftBehindEliminated',
+            'You failed to reach the Extraction Boarding Zone before departure and were left behind!',
+            'Danger'
+          );
+        }
+      } else if (player.status === 'ELIMINATED') {
+        eliminatedCount += 1;
       }
     }
+
+    this.lastOutcome = extractedCount > 0 ? 'SUCCESS' : 'FAILED';
 
     this.transitionTo('RETURN', GAME_CONFIG.RoundDurations.RETURN);
     this.broadcastPlayerStatusSummary();
     this.pushNotification(
       'ALL',
       'ReturningToHub',
-      'Train departing Station 001. Returning extracted crew to the Train Hub.',
-      'Success'
+      `Train departing Station 001 (${extractedCount} extracted, ${eliminatedCount} eliminated). Outcome: ${this.lastOutcome}.`,
+      extractedCount > 0 ? 'Success' : 'Danger'
     );
   }
 
@@ -554,8 +982,8 @@ export class NightlineServerEngine {
     this.pushNotification(
       'ALL',
       'ExpeditionResults',
-      'Expedition complete. Reviewing crew status and preparing Train Hub cleanup.',
-      'Info'
+      `Expedition complete (${this.lastOutcome}). Reviewing crew status and preparing Train Hub cleanup.`,
+      this.lastOutcome === 'SUCCESS' ? 'Success' : 'Warning'
     );
   }
 
@@ -563,15 +991,16 @@ export class NightlineServerEngine {
     this.runtimeStationObjectsCount = 0;
     this.activeExpeditionUserIds.clear();
 
-    let index = 0;
     for (const player of this.players.values()) {
       player.status = 'HUB_WAITING';
       player.isReady = false;
+      player.isSprinting = false;
+      player.walkSpeed = GAME_CONFIG.WALK_SPEED;
       player.missionItems = {};
       player.health = player.maxHealth;
-      const spawn = HUB_SPAWN_OFFSETS[index % HUB_SPAWN_OFFSETS.length];
+      const slot = this.getPlayerSpawnSlot(player.userId);
+      const spawn = HUB_SPAWN_OFFSETS[(slot - 1) % HUB_SPAWN_OFFSETS.length];
       player.position = { x: spawn.x, z: spawn.z };
-      index += 1;
     }
 
     this.broadcastPlayerStatusSummary();
@@ -599,7 +1028,13 @@ export class NightlineServerEngine {
       return { ok: false, reason: 'RateLimited' };
     }
 
-    if (!this.checkAndSetCooldown(userId, 'RequestEquipment', GAME_CONFIG.EQUIPMENT_COOLDOWN_SECONDS)) {
+    if (
+      !this.checkAndSetCooldown(
+        userId,
+        'RequestEquipment',
+        GAME_CONFIG.EQUIPMENT_COOLDOWN_SECONDS
+      )
+    ) {
       this.logRemote(
         'Client->Server',
         'RequestEquipment',
@@ -881,6 +1316,8 @@ export class NightlineServerEngine {
       return this.handleDestinationVote(userId, interactable.stationId ?? 'Station001');
     } else if (interactable.tag === 'NightlineBoardingZone') {
       return this.togglePlayerBoardingReady(userId);
+    } else if (interactable.tag === 'NightlineExtractionZone') {
+      return this.tryExtractPlayer(userId);
     }
 
     return { ok: false, reason: 'UnhandledTag' };
@@ -900,6 +1337,17 @@ export class NightlineServerEngine {
     let count = 0;
     for (const userId of this.activeExpeditionUserIds) {
       if (this.players.has(userId)) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  public countSurvivingExpeditionPlayers(): number {
+    let count = 0;
+    for (const userId of this.activeExpeditionUserIds) {
+      const player = this.players.get(userId);
+      if (player && (player.status === 'IN_EXPEDITION' || player.status === 'EXTRACTED')) {
         count += 1;
       }
     }

@@ -3,6 +3,7 @@ import {
   NightlineServerEngine,
   HUB_INTERACTABLES,
   HUB_SPAWN_OFFSETS,
+  ELIMINATED_SPAWN_OFFSETS,
   BOARDING_BAY_OFFSETS,
   GAME_CONFIG,
   HubInteractable,
@@ -80,7 +81,12 @@ export const TrainHubCanvas: React.FC<TrainHubCanvasProps> = ({
       }
 
       const key = e.key.toLowerCase();
+      const wasShiftHeld = keysPressed.has('shift');
       keysPressed.add(key);
+
+      if (key === 'shift' && !wasShiftHeld && !isPausedRef.current) {
+        engineRef.current.handleSprintRequest(localUserId, true);
+      }
 
       if (key === 'e' && !e.repeat && !isPausedRef.current) {
         const engine = engineRef.current;
@@ -106,10 +112,17 @@ export const TrainHubCanvas: React.FC<TrainHubCanvasProps> = ({
     };
 
     const handleKeyUp = (e: KeyboardEvent) => {
-      keysPressed.delete(e.key.toLowerCase());
+      const key = e.key.toLowerCase();
+      keysPressed.delete(key);
+      if (key === 'shift' && !isPausedRef.current) {
+        engineRef.current.handleSprintRequest(localUserId, false);
+      }
     };
 
     const clearHeldKeys = () => {
+      if (keysPressed.has('shift')) {
+        engineRef.current.handleSprintRequest(localUserId, false);
+      }
       keysPressed.clear();
     };
 
@@ -161,7 +174,6 @@ export const TrainHubCanvas: React.FC<TrainHubCanvasProps> = ({
             localPlayer.velocity.x = 0;
             localPlayer.velocity.z = 0;
           }
-          localPlayer.isSprinting = keysPressed.has('shift');
         }
 
         // Advance authoritative simulation
@@ -225,17 +237,11 @@ export const TrainHubCanvas: React.FC<TrainHubCanvasProps> = ({
       ctx.fillStyle = '#090d16';
       ctx.fillRect(0, 0, width, height);
 
-      // Map Train Hub coordinate space:
-      // We render the train horizontally across the center of the viewport so the full 84-stud length fits comfortably!
-      // Train Z (-42 front locomotive to +42 rear bulkhead) maps to horizontal X on screen (front on RIGHT, rear on LEFT)
-      // Train X (-11 left wall to +11 right wall) maps to vertical Y on screen
       const centerX = width * 0.5;
-      const centerY = height * 0.52;
-      const scale = Math.min((width * 0.82) / 96, (height * 0.64) / 34);
+      const centerY = height * 0.5;
+      const scale = Math.min((width * 0.82) / 96, (height * 0.62) / 36);
 
       const worldToScreen = (wx: number, wz: number) => {
-        // wz = -42 (front) -> right side (+42 * scale)
-        // wz = +42 (rear) -> left side (-42 * scale)
         return {
           sx: centerX - wz * scale,
           sy: centerY + wx * scale,
@@ -248,8 +254,8 @@ export const TrainHubCanvas: React.FC<TrainHubCanvasProps> = ({
       for (let gx = -56; gx <= 56; gx += 4) {
         const tieX = centerX + gx * scale - (railScrollOffset % (4 * scale));
         ctx.beginPath();
-        ctx.moveTo(tieX, centerY - 15 * scale);
-        ctx.lineTo(tieX, centerY + 15 * scale);
+        ctx.moveTo(tieX, centerY - 14 * scale);
+        ctx.lineTo(tieX, centerY + 14 * scale);
         ctx.stroke();
       }
 
@@ -263,7 +269,7 @@ export const TrainHubCanvas: React.FC<TrainHubCanvasProps> = ({
         ctx.stroke();
       });
 
-      // Station 001 Boarding Platform on the bottom/right side (Positive X in world = lower on screen)
+      // Station 001 Boarding Platform on the bottom side (Positive X in world = lower on screen)
       const isAtStation =
         engine.state === 'EXPLORATION' || engine.state === 'EXTRACTION';
       const platformTopLeft = worldToScreen(11.5, 42);
@@ -275,7 +281,7 @@ export const TrainHubCanvas: React.FC<TrainHubCanvasProps> = ({
         platformBottomRight.sx - platformTopLeft.sx,
         platformBottomRight.sy - platformTopLeft.sy
       );
-      ctx.strokeStyle = isAtStation ? '#f59e0b' : '#334155';
+      ctx.strokeStyle = isAtStation ? '#10b981' : '#334155';
       ctx.lineWidth = 2;
       ctx.strokeRect(
         platformTopLeft.sx,
@@ -284,15 +290,15 @@ export const TrainHubCanvas: React.FC<TrainHubCanvasProps> = ({
         platformBottomRight.sy - platformTopLeft.sy
       );
 
-      ctx.fillStyle = isAtStation ? '#fbbf24' : '#64748b';
-      ctx.font = `600 ${Math.max(10, Math.floor(scale * 1.15))}px "JetBrains Mono", monospace`;
+      ctx.fillStyle = isAtStation ? '#34d399' : '#64748b';
+      ctx.font = `600 ${Math.max(10, Math.floor(scale * 1.1))}px "JetBrains Mono", monospace`;
       ctx.textAlign = 'center';
       ctx.fillText(
         isAtStation
-          ? 'STATION 001: THE FORGOTTEN TERMINAL · EXTRACTION PLATFORM ACTIVE'
-          : 'HUB PLATFORM BAY · BOARDING GATE ALIGNED',
+          ? 'STATION 001: THE FORGOTTEN TERMINAL · PHYSICAL EXTRACTION ZONE ACTIVE'
+          : 'HUB PLATFORM BAY · BOARDING & EXTRACTION ZONE ALIGNED',
         centerX,
-        platformTopLeft.sy + 5 * scale
+        platformTopLeft.sy + 6.5 * scale
       );
 
       // Train Carriage Outer Hull (Z from -42 to +42, X from -11 to +11)
@@ -359,10 +365,13 @@ export const TrainHubCanvas: React.FC<TrainHubCanvasProps> = ({
 
       // Zone Labels inside Train Hub
       ctx.fillStyle = 'rgba(148, 163, 184, 0.55)';
-      ctx.font = `600 ${Math.max(9, Math.floor(scale * 0.95))}px "JetBrains Mono", monospace`;
+      ctx.font = `600 ${Math.max(9, Math.floor(scale * 0.9))}px "JetBrains Mono", monospace`;
       ctx.textAlign = 'center';
+      const recZonePos = worldToScreen(0, 37);
+      ctx.fillText('RECOVERY BAY', recZonePos.sx, recZonePos.sy);
+
       const rearZonePos = worldToScreen(0, 22);
-      ctx.fillText('CREW SPAWN CARRIAGE (HUB_WAITING)', rearZonePos.sx, rearZonePos.sy);
+      ctx.fillText('CREW SPAWN CARRIAGE', rearZonePos.sx, rearZonePos.sy);
 
       const midZonePos = worldToScreen(0, -8);
       ctx.fillText('LOCKER & BOARDING BAY', midZonePos.sx, midZonePos.sy);
@@ -370,7 +379,22 @@ export const TrainHubCanvas: React.FC<TrainHubCanvasProps> = ({
       const frontZonePos = worldToScreen(0, -28);
       ctx.fillText('COMMAND & DISPATCH', frontZonePos.sx, frontZonePos.sy);
 
-      // 6 Hub Spawn Pads (Z = 12, 22, 32)
+      // Eliminated Recovery Berths (Issue 01: Z = 35..38)
+      ELIMINATED_SPAWN_OFFSETS.forEach((berth, idx) => {
+        const pos = worldToScreen(berth.x, berth.z);
+        const sz = 2.4 * scale;
+        ctx.fillStyle = 'rgba(244, 63, 94, 0.16)';
+        ctx.strokeStyle = 'rgba(244, 63, 94, 0.6)';
+        ctx.lineWidth = 1.2;
+        ctx.fillRect(pos.sx - sz / 2, pos.sy - sz / 2, sz, sz);
+        ctx.strokeRect(pos.sx - sz / 2, pos.sy - sz / 2, sz, sz);
+
+        ctx.fillStyle = '#fb7185';
+        ctx.font = `600 ${Math.max(7, Math.floor(scale * 0.7))}px "JetBrains Mono", monospace`;
+        ctx.fillText(`R${idx + 1}`, pos.sx, pos.sy + 3);
+      });
+
+      // 6 Hub Spawn Pads (Issue 02: Explicit Slots S1..S6 at Z = 12, 22, 32)
       HUB_SPAWN_OFFSETS.forEach((pad, idx) => {
         const pos = worldToScreen(pad.x, pad.z);
         const padSize = 3.4 * scale;
@@ -400,10 +424,9 @@ export const TrainHubCanvas: React.FC<TrainHubCanvasProps> = ({
         ctx.fillText(`B${idx + 1}`, pos.sx, pos.sy + 3);
       });
 
-      // Render Tagged Interactables (DestinationConsole, Equipment Lockers, Boarding Gate)
+      // Render Tagged Interactables (DestinationConsole, Equipment Lockers, Boarding Gate, ExtractionPlatformZone)
       HUB_INTERACTABLES.forEach((item) => {
         const pos = worldToScreen(item.position.x, item.position.z);
-        // Because world Z is horizontal and world X is vertical:
         const wScreen = item.size.d * scale;
         const hScreen = item.size.w * scale;
 
@@ -415,6 +438,12 @@ export const TrainHubCanvas: React.FC<TrainHubCanvasProps> = ({
         } else if (item.tag === 'NightlineEquipmentLocker') {
           ctx.fillStyle = isHighlighted ? '#3b82f6' : '#1d4ed8';
           ctx.strokeStyle = isHighlighted ? '#fde047' : '#60a5fa';
+        } else if (item.tag === 'NightlineExtractionZone') {
+          ctx.fillStyle =
+            engine.state === 'EXTRACTION'
+              ? 'rgba(16, 185, 129, 0.35)'
+              : 'rgba(16, 185, 129, 0.15)';
+          ctx.strokeStyle = isHighlighted ? '#fde047' : '#10b981';
         } else {
           ctx.fillStyle = isHighlighted ? '#d97706' : '#b45309';
           ctx.strokeStyle = isHighlighted ? '#fde047' : '#fbbf24';
@@ -435,8 +464,15 @@ export const TrainHubCanvas: React.FC<TrainHubCanvasProps> = ({
             ? 'FLASHLIGHT [1]'
             : item.id === 'EquipmentLocker_Flare'
             ? 'FLARE [2]'
+            : item.id === 'ExtractionPlatformZone'
+            ? 'EXTRACTION ZONE'
             : 'BOARDING GATE';
-        const labelOffsetY = item.position.x < 0 ? -hScreen / 2 - 6 : hScreen / 2 + 12;
+        const labelOffsetY =
+          item.id === 'ExtractionPlatformZone'
+            ? 4
+            : item.position.x < 0
+            ? -hScreen / 2 - 6
+            : hScreen / 2 + 12;
         ctx.fillText(shortLabel, pos.sx, pos.sy + labelOffsetY);
       });
 
@@ -447,10 +483,9 @@ export const TrainHubCanvas: React.FC<TrainHubCanvasProps> = ({
 
         // Flashlight Cone if Flashlight is equipped in active slot
         const activeEquipment = player.equipmentSlots[player.activeSlot];
-        if (activeEquipment === 'Flashlight') {
+        if (activeEquipment === 'Flashlight' && player.status !== 'ELIMINATED') {
           ctx.save();
           ctx.translate(pos.sx, pos.sy);
-          // Convert world facing angle to screen angle
           const screenDirX = -Math.cos(player.facingAngle);
           const screenDirY = Math.sin(player.facingAngle);
           const angle = Math.atan2(screenDirY, screenDirX);
@@ -482,7 +517,13 @@ export const TrainHubCanvas: React.FC<TrainHubCanvasProps> = ({
         // Player Avatar Circle
         ctx.beginPath();
         ctx.arc(pos.sx, pos.sy, radius, 0, Math.PI * 2);
-        if (player.userId === localUserId) {
+        if (player.status === 'ELIMINATED') {
+          ctx.fillStyle = '#e11d48';
+          ctx.strokeStyle = '#fecdd3';
+        } else if (player.status === 'EXTRACTED') {
+          ctx.fillStyle = '#10b981';
+          ctx.strokeStyle = '#d1fae5';
+        } else if (player.userId === localUserId) {
           ctx.fillStyle = '#38bdf8';
           ctx.strokeStyle = '#f8fafc';
         } else if (player.status === 'IN_EXPEDITION' || player.status === 'BOARDED') {
@@ -496,12 +537,12 @@ export const TrainHubCanvas: React.FC<TrainHubCanvasProps> = ({
         ctx.fill();
         ctx.stroke();
 
-        // Player Name & Status Label
+        // Player Name, Slot & Status Label
         ctx.fillStyle = '#f8fafc';
         ctx.font = `600 ${Math.max(10, Math.floor(scale * 0.9))}px "Plus Jakarta Sans", sans-serif`;
         ctx.textAlign = 'center';
         ctx.fillText(
-          `${player.displayName} (${player.status === 'HUB_WAITING' ? 'HUB' : player.status})`,
+          `${player.displayName} [S${player.spawnSlot}] (${player.status === 'HUB_WAITING' ? 'HUB' : player.status})`,
           pos.sx,
           pos.sy - radius - 6
         );

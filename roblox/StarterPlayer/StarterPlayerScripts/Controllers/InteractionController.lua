@@ -7,7 +7,7 @@
 
 local ProximityPromptService = game:GetService("ProximityPromptService")
 
-local InteractionController = {
+local InteractionController: { [string]: any } = {
 	Name = "InteractionController",
 	_activeHighlight = nil :: Highlight?,
 }

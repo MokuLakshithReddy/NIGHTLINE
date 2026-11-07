@@ -16,6 +16,7 @@ import remotesRegistryLua from '../../roblox/ReplicatedStorage/Remotes/RemotesRe
 
 import bootstrapServerLua from '../../roblox/ServerScriptService/Bootstrap.server.lua?raw';
 import securityServiceLua from '../../roblox/ServerScriptService/Services/SecurityService.lua?raw';
+import movementServiceLua from '../../roblox/ServerScriptService/Services/MovementService.lua?raw';
 import hubServiceLua from '../../roblox/ServerScriptService/Services/HubService.lua?raw';
 import inventoryServiceLua from '../../roblox/ServerScriptService/Services/InventoryService.lua?raw';
 import roundServiceLua from '../../roblox/ServerScriptService/Services/RoundService.lua?raw';
@@ -45,7 +46,7 @@ export const PROJECT_SOURCE_FILES: ProjectSourceFile[] = [
     path: 'default.project.json',
     robloxInstancePath: 'DataModel (Rojo Root)',
     category: 'Rojo & Toolchain',
-    summary: 'Rojo 7.4+ project file mapping /roblox scripts and Workspace.World.Hub folders.',
+    summary: 'Rojo 7.7.1 project file mapping /roblox scripts and Workspace.World.Hub folders.',
     content: defaultProjectJson,
   },
   {
@@ -73,21 +74,21 @@ export const PROJECT_SOURCE_FILES: ProjectSourceFile[] = [
     path: 'rokit.toml',
     robloxInstancePath: 'Rokit / Aftman Toolchain',
     category: 'Rojo & Toolchain',
-    summary: 'Pins CLI versions for rojo, stylua, selene, and luau-lsp.',
+    summary: 'Pins CLI versions for rojo 7.7.1, stylua 2.6.0, selene 0.32.0, and luau-lsp 1.70.1.',
     content: rokitTomlRaw,
   },
   {
     path: 'roblox/ReplicatedStorage/Shared/Types/NetworkTypes.lua',
     robloxInstancePath: 'ReplicatedStorage.Shared.Types.NetworkTypes',
     category: 'ReplicatedStorage',
-    summary: 'Strict Luau exported types for RoundState, PlayerRoundStatus, and Remote payloads.',
+    summary: 'Strict Luau exported types for RoundState, PlayerRoundStatus, RoundOutcome, and Remote payloads.',
     content: networkTypesLua,
   },
   {
     path: 'roblox/ReplicatedStorage/Shared/Config/GameConfig.lua',
     robloxInstancePath: 'ReplicatedStorage.Shared.Config.GameConfig',
     category: 'ReplicatedStorage',
-    summary: 'Centralized round timings, crew limits, walk/sprint speeds, and security tolerances.',
+    summary: 'Centralized round timings, crew limits, walk/sprint speeds, extraction radius, and security tolerances.',
     content: gameConfigLua,
   },
   {
@@ -136,7 +137,7 @@ export const PROJECT_SOURCE_FILES: ProjectSourceFile[] = [
     path: 'roblox/ReplicatedStorage/Remotes/RemotesRegistry.lua',
     robloxInstancePath: 'ReplicatedStorage.Remotes.RemotesRegistry',
     category: 'ReplicatedStorage',
-    summary: 'Creates and validates all 7 Networking Contract RemoteEvents.',
+    summary: 'Creates and validates all 8 Networking Contract RemoteEvents (including RequestSprint).',
     content: remotesRegistryLua,
   },
   {
@@ -154,10 +155,17 @@ export const PROJECT_SOURCE_FILES: ProjectSourceFile[] = [
     content: securityServiceLua,
   },
   {
+    path: 'roblox/ServerScriptService/Services/MovementService.lua',
+    robloxInstancePath: 'ServerScriptService.Services.MovementService',
+    category: 'ServerScriptService',
+    summary: 'Server-authoritative sprint validation, WalkSpeed application, and movement speed/teleport rubberbanding.',
+    content: movementServiceLua,
+  },
+  {
     path: 'roblox/ServerScriptService/Services/HubService.lua',
     robloxInstancePath: 'ServerScriptService.Services.HubService',
     category: 'ServerScriptService',
-    summary: 'Builds Workspace.World.Hub.Train geometry, 6 spawn pads, and tagged ProximityPrompts.',
+    summary: 'Builds Train Hub, explicit 1..6 spawn-slot allocator, Recovery Bay berths, and physical Extraction Platform zone.',
     content: hubServiceLua,
   },
   {
@@ -171,14 +179,14 @@ export const PROJECT_SOURCE_FILES: ProjectSourceFile[] = [
     path: 'roblox/ServerScriptService/Services/RoundService.lua',
     robloxInstancePath: 'ServerScriptService.Services.RoundService',
     category: 'ServerScriptService',
-    summary: 'Authoritative 8-state round state machine, roster, late-join isolation, and round cleanup.',
+    summary: 'Authoritative 8-state round loop, state-aware respawning, elimination handling, and physical extraction validation.',
     content: roundServiceLua,
   },
   {
     path: 'roblox/ServerScriptService/Services/InteractionService.lua',
     robloxInstancePath: 'ServerScriptService.Services.InteractionService',
     category: 'ServerScriptService',
-    summary: 'Server-side ProximityPromptService.PromptTriggered distance and tag validation.',
+    summary: 'Server-side ProximityPromptService.PromptTriggered distance, tag, and ExtractionPlatformZone validation.',
     content: interactionServiceLua,
   },
   {

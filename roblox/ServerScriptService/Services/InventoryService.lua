@@ -17,7 +17,7 @@ type PlayerInventoryRecord = {
 	missionItems: { [NetworkTypes.MissionItemId]: number },
 }
 
-local InventoryService = {
+local InventoryService: { [string]: any } = {
 	Name = "InventoryService",
 	_inventories = {} :: { [number]: PlayerInventoryRecord },
 	_remotes = nil :: { [string]: RemoteEvent }?,
@@ -42,9 +42,11 @@ function InventoryService:Start()
 	local remotes = self._remotes
 	assert(remotes, "InventoryService requires remotes initialized")
 
-	remotes.RequestEquipment.OnServerEvent:Connect(function(player: Player, slotIndex: any, requestedItemId: any)
-		self:HandleEquipmentRequest(player, slotIndex, requestedItemId)
-	end)
+	remotes.RequestEquipment.OnServerEvent:Connect(
+		function(player: Player, slotIndex: any, requestedItemId: any)
+			self:HandleEquipmentRequest(player, slotIndex, requestedItemId)
+		end
+	)
 
 	Players.PlayerRemoving:Connect(function(player: Player)
 		self._inventories[player.UserId] = nil
@@ -96,7 +98,11 @@ function InventoryService:SyncToPlayer(player: Player)
 	remotes.InventoryUpdated:FireClient(player, payload)
 end
 
-function InventoryService:HandleEquipmentRequest(player: Player, slotIndex: any, requestedItemId: any): (boolean, string)
+function InventoryService:HandleEquipmentRequest(
+	player: Player,
+	slotIndex: any,
+	requestedItemId: any
+): (boolean, string)
 	local security = self._securityService
 	if not security:ValidatePlayerInstance(player) then
 		return false, "InvalidPlayer"
@@ -113,10 +119,20 @@ function InventoryService:HandleEquipmentRequest(player: Player, slotIndex: any,
 	-- Validate round phase: equipment preparation is only allowed in Hub / Preparation phases
 	if self._roundService then
 		local currentState: NetworkTypes.RoundState = self._roundService:GetState()
-		local playerStatus: NetworkTypes.PlayerRoundStatus = self._roundService:GetPlayerStatus(player)
-		local isPrepPhase = (currentState == "WAITING" or currentState == "INTERMISSION" or currentState == "BOARDING")
+		local playerStatus: NetworkTypes.PlayerRoundStatus =
+			self._roundService:GetPlayerStatus(player)
+		local isPrepPhase = (
+			currentState == "WAITING"
+			or currentState == "INTERMISSION"
+			or currentState == "BOARDING"
+		)
 		if not isPrepPhase and playerStatus ~= "HUB_WAITING" then
-			self:_sendNotification(player, "EquipmentLocked", "Equipment can only be changed inside the Train Hub before departure.", "Warning")
+			self:_sendNotification(
+				player,
+				"EquipmentLocked",
+				"Equipment can only be changed inside the Train Hub before departure.",
+				"Warning"
+			)
 			return false, "InvalidRoundPhase"
 		end
 	end

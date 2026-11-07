@@ -17,7 +17,7 @@ export type StationDefinition = {
 	missionPool: { NetworkTypes.MissionTemplateId },
 }
 
-local Stations: { [NetworkTypes.StationId]: StationDefinition } = {
+local Stations: { [string]: StationDefinition } = {
 	Station001 = table.freeze({
 		id = "Station001" :: NetworkTypes.StationId,
 		code = "STN-001",

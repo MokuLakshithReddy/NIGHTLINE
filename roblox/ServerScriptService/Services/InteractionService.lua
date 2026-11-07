@@ -11,7 +11,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local GameConfig = require(ReplicatedStorage.Shared.Config.GameConfig)
 
-local InteractionService = {
+local InteractionService: { [string]: any } = {
 	Name = "InteractionService",
 	_securityService = nil :: any,
 	_inventoryService = nil :: any,
@@ -34,7 +34,10 @@ function InteractionService:Start()
 	end)
 end
 
-function InteractionService:HandlePromptTriggered(prompt: ProximityPrompt, player: Player): (boolean, string)
+function InteractionService:HandlePromptTriggered(
+	prompt: ProximityPrompt,
+	player: Player
+): (boolean, string)
 	local security = self._securityService
 	if not security:ValidatePlayerInstance(player) then
 		return false, "InvalidPlayer"
@@ -50,12 +53,24 @@ function InteractionService:HandlePromptTriggered(prompt: ProximityPrompt, playe
 	end
 
 	-- Per-player prompt cooldown check
-	if not security:CheckAndSetCooldown(player.UserId, "PromptTriggered", GameConfig.PROMPT_COOLDOWN_SECONDS) then
+	if
+		not security:CheckAndSetCooldown(
+			player.UserId,
+			"PromptTriggered",
+			GameConfig.PROMPT_COOLDOWN_SECONDS
+		)
+	then
 		return false, "CooldownActive"
 	end
 
 	-- Validate living character and distance on the server
-	if not security:ValidateDistance(player, parentPart.Position, GameConfig.MAX_INTERACTION_DISTANCE) then
+	if
+		not security:ValidateDistance(
+			player,
+			parentPart.Position,
+			GameConfig.MAX_INTERACTION_DISTANCE
+		)
+	then
 		warn(string.format("[InteractionService] Rejected far prompt trigger from %s", player.Name))
 		return false, "OutOfRange"
 	end
@@ -70,6 +85,8 @@ function InteractionService:HandlePromptTriggered(prompt: ProximityPrompt, playe
 		return self._roundService:HandleDestinationVote(player, stationId)
 	elseif CollectionService:HasTag(parentPart, GameConfig.Tags.BoardingZone) then
 		return self._roundService:TogglePlayerBoardingReady(player)
+	elseif CollectionService:HasTag(parentPart, GameConfig.Tags.ExtractionZone) then
+		return self._roundService:TryExtractPlayer(player)
 	end
 
 	return false, "UnhandledTag"

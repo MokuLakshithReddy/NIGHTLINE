@@ -15,7 +15,7 @@ type RateBucket = {
 	count: number,
 }
 
-local SecurityService = {
+local SecurityService: { [string]: any } = {
 	Name = "SecurityService",
 	_rateBuckets = {} :: { [number]: { [string]: RateBucket } },
 	_actionCooldowns = {} :: { [number]: { [string]: number } },
@@ -47,7 +47,12 @@ function SecurityService:ValidatePlayerInstance(player: any): boolean
 	return true
 end
 
-function SecurityService:CheckRateLimit(userId: number, actionKey: string, maxCallsPerWindow: number?, windowSeconds: number?): boolean
+function SecurityService:CheckRateLimit(
+	userId: number,
+	actionKey: string,
+	maxCallsPerWindow: number?,
+	windowSeconds: number?
+): boolean
 	local now = os.clock()
 	local maxCalls = maxCallsPerWindow or GameConfig.REMOTE_MAX_CALLS_PER_WINDOW
 	local window = windowSeconds or GameConfig.REMOTE_RATE_LIMIT_WINDOW
@@ -68,7 +73,13 @@ function SecurityService:CheckRateLimit(userId: number, actionKey: string, maxCa
 	end
 
 	if bucket.count >= maxCalls then
-		warn(string.format("[SecurityService] Rate limit exceeded for userId=%d action=%s", userId, actionKey))
+		warn(
+			string.format(
+				"[SecurityService] Rate limit exceeded for userId=%d action=%s",
+				userId,
+				actionKey
+			)
+		)
 		return false
 	end
 
@@ -76,7 +87,11 @@ function SecurityService:CheckRateLimit(userId: number, actionKey: string, maxCa
 	return true
 end
 
-function SecurityService:CheckAndSetCooldown(userId: number, actionKey: string, cooldownSeconds: number): boolean
+function SecurityService:CheckAndSetCooldown(
+	userId: number,
+	actionKey: string,
+	cooldownSeconds: number
+): boolean
 	local now = os.clock()
 	local playerCooldowns = self._actionCooldowns[userId]
 	if not playerCooldowns then
@@ -93,7 +108,11 @@ function SecurityService:CheckAndSetCooldown(userId: number, actionKey: string, 
 	return true
 end
 
-function SecurityService:ValidateString(value: any, maxLength: number, allowlist: { [string]: boolean }?): boolean
+function SecurityService:ValidateString(
+	value: any,
+	maxLength: number,
+	allowlist: { [string]: boolean }?
+): boolean
 	if type(value) ~= "string" then
 		return false
 	end
@@ -106,7 +125,11 @@ function SecurityService:ValidateString(value: any, maxLength: number, allowlist
 	return true
 end
 
-function SecurityService:ValidateIntegerInRange(value: any, minValue: number, maxValue: number): boolean
+function SecurityService:ValidateIntegerInRange(
+	value: any,
+	minValue: number,
+	maxValue: number
+): boolean
 	if type(value) ~= "number" then
 		return false
 	end
@@ -138,7 +161,11 @@ function SecurityService:GetValidatedCharacterRoot(player: Player): (Model?, Bas
 	return character, rootPart, humanoid
 end
 
-function SecurityService:ValidateDistance(player: Player, targetPosition: Vector3, maxDistance: number?): boolean
+function SecurityService:ValidateDistance(
+	player: Player,
+	targetPosition: Vector3,
+	maxDistance: number?
+): boolean
 	local _, rootPart = self:GetValidatedCharacterRoot(player)
 	if not rootPart then
 		return false

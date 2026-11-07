@@ -7,7 +7,8 @@
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local RemotesRegistry = require(ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("RemotesRegistry"))
+local RemotesRegistry =
+	require(ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("RemotesRegistry"))
 
 local ControllersFolder = script.Parent:WaitForChild("Controllers")
 local UIController = require(ControllersFolder:WaitForChild("UIController"))
@@ -22,6 +23,7 @@ local function bootstrapClient()
 	})
 	InputController:Init({
 		uiController = UIController,
+		remotes = remotes,
 	})
 	InteractionController:Init()
 
@@ -30,7 +32,9 @@ local function bootstrapClient()
 	InteractionController:Start()
 end
 
-local ok, err = pcall(bootstrapClient)
+local ok, err = pcall(function()
+	bootstrapClient()
+end)
 if not ok then
 	warn("[NIGHTLINE Client] Failed to bootstrap client controllers:", err)
 end

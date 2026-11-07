@@ -16,6 +16,7 @@ export type RemoteName =
 	| "Notification"
 	| "RequestEquipment"
 	| "RequestDestinationVote"
+	| "RequestSprint"
 
 local REMOTE_NAMES: { RemoteName } = table.freeze({
 	"RoundStateChanged" :: RemoteName,
@@ -25,6 +26,7 @@ local REMOTE_NAMES: { RemoteName } = table.freeze({
 	"Notification" :: RemoteName,
 	"RequestEquipment" :: RemoteName,
 	"RequestDestinationVote" :: RemoteName,
+	"RequestSprint" :: RemoteName,
 })
 
 local RemotesRegistry = {
@@ -36,6 +38,7 @@ local RemotesRegistry = {
 		Notification = "Notification" :: RemoteName,
 		RequestEquipment = "RequestEquipment" :: RemoteName,
 		RequestDestinationVote = "RequestDestinationVote" :: RemoteName,
+		RequestSprint = "RequestSprint" :: RemoteName,
 	}),
 	AllNames = REMOTE_NAMES,
 }
@@ -46,17 +49,20 @@ function RemotesRegistry.GetOrCreateFolder(): Folder
 		return existing
 	end
 
-	assert(RunService:IsServer(), "Remotes folder must be created by the server before client access")
+	assert(
+		RunService:IsServer(),
+		"Remotes folder must be created by the server before client access"
+	)
 	local folder = Instance.new("Folder")
 	folder.Name = "Remotes"
 	folder.Parent = ReplicatedStorage
 	return folder
 end
 
-function RemotesRegistry.InitializeServerRemotes(): { [RemoteName]: RemoteEvent }
+function RemotesRegistry.InitializeServerRemotes(): { [string]: RemoteEvent }
 	assert(RunService:IsServer(), "InitializeServerRemotes can only be called on the server")
 	local folder = RemotesRegistry.GetOrCreateFolder()
-	local map: { [RemoteName]: RemoteEvent } = {} :: any
+	local map: { [string]: RemoteEvent } = {}
 
 	for _, remoteName in ipairs(REMOTE_NAMES) do
 		local existing = folder:FindFirstChild(remoteName)
@@ -76,15 +82,21 @@ function RemotesRegistry.InitializeServerRemotes(): { [RemoteName]: RemoteEvent 
 	return map
 end
 
-function RemotesRegistry.WaitForClientRemotes(timeoutSeconds: number?): { [RemoteName]: RemoteEvent }
+function RemotesRegistry.WaitForClientRemotes(timeoutSeconds: number?): { [string]: RemoteEvent }
 	local timeout = timeoutSeconds or 10
 	local folder = ReplicatedStorage:WaitForChild("Remotes", timeout)
-	assert(folder and folder:IsA("Folder"), "Timed out waiting for ReplicatedStorage.Remotes folder")
+	assert(
+		folder and folder:IsA("Folder"),
+		"Timed out waiting for ReplicatedStorage.Remotes folder"
+	)
 
-	local map: { [RemoteName]: RemoteEvent } = {} :: any
+	local map: { [string]: RemoteEvent } = {}
 	for _, remoteName in ipairs(REMOTE_NAMES) do
 		local remote = folder:WaitForChild(remoteName, timeout)
-		assert(remote and remote:IsA("RemoteEvent"), string.format("Missing RemoteEvent: %s", remoteName))
+		assert(
+			remote and remote:IsA("RemoteEvent"),
+			string.format("Missing RemoteEvent: %s", remoteName)
+		)
 		map[remoteName] = remote :: RemoteEvent
 	end
 
