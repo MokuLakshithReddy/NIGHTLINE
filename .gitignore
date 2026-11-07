@@ -7,3 +7,7 @@ coverage/
 .env*
 !.env.example
 roblox.yml
+.playwright-cli/
+*.rbxl
+sourcemap.json
+

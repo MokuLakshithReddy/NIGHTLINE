@@ -3,10 +3,12 @@
 	RoundService.lua
 	Authoritative server-side Round State Machine for NIGHTLINE: LAST TRAIN (Section 3.2, 3.3, 3.4 & Milestone 1).
 	Includes fixes for:
-	- Issue 01: Player-state-aware CharacterAdded spawning, Humanoid.Died hook, and Elimination isolation.
+	- Remediation #1: All 6 active station spawns are strictly outside the physical Extraction Zone.
+	- Remediation #2 (Issue 01): State-aware fresh-character respawn flow. Never heals or pivots a dead Humanoid inside Humanoid.Died.
 	- Issue 02: Explicit 1..6 spawn-slot allocation on join and slot release on departure.
-	- Issue 03: Periodic MovementService speed/teleport sanity validation tick.
-	- Issue 04: Physical extraction zone proximity, survival, and eligibility validation (no simulated auto-extraction).
+	- Remediation #3 (Issue 03): Periodic MovementService 3D (horizontal + vertical) sanity validation tick.
+	- Remediation #4: Immediate round termination to RETURN (FAILED) when all active expedition players are eliminated, without waiting for the phase timer.
+	- Issue 04: Physical extraction zone proximity, survival, and eligibility validation.
 ]]
 
 local Players = game:GetService("Players")
@@ -195,7 +197,9 @@ function RoundService:RegisterPlayer(player: Player): number
 	return allocatedSlot
 end
 
--- Issue 01: Player-state-aware CharacterAdded handler
+-- Remediation #2: State-aware fresh-character respawn handler.
+-- When a fresh character spawns via CharacterAdded, route it according to the player's authoritative status.
+-- Never attempt to revive a dead Humanoid inside Humanoid.Died.
 function RoundService:HandleCharacterAdded(player: Player, character: Model)
 	local entry = self._roster[player.UserId]
 	if not entry then
@@ -207,9 +211,10 @@ function RoundService:HandleCharacterAdded(player: Player, character: Model)
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
 	if humanoid then
 		local diedConn = humanoid.Died:Connect(function()
+			-- Remediation #2: Only update authoritative player status and round state on death.
+			-- Do NOT restore Humanoid.Health or pivot the dead character inside Humanoid.Died.
 			if entry.status == "IN_EXPEDITION" then
-				entry.diedDuringExpedition = true
-				self:EliminatePlayer(player, "CharacterDied")
+				self:EliminatePlayer(player, "CharacterDied", false)
 			end
 		end)
 		table.insert(entry.characterConnections, diedConn)
@@ -219,10 +224,9 @@ function RoundService:HandleCharacterAdded(player: Player, character: Model)
 		return
 	end
 
-	-- Route spawn destination strictly by authoritative player state and round state
+	-- Route the newly spawned (living) character strictly by authoritative player state and round state
 	if entry.status == "IN_EXPEDITION" then
 		if entry.diedDuringExpedition then
-			-- Respawning after dying during an expedition transitions to ELIMINATED in the Hub Recovery Bay
 			entry.status = "ELIMINATED"
 			self._hubService:SpawnEliminatedPlayerInHub(player, entry.spawnSlot)
 			self:_broadcastPlayerStatuses()
@@ -234,8 +238,9 @@ function RoundService:HandleCharacterAdded(player: Player, character: Model)
 			self._hubService:SpawnPlayerInHub(player, entry.spawnSlot)
 		end
 	elseif entry.status == "ELIMINATED" then
-		-- Eliminated players remain in the Train Hub Recovery Bay and cannot re-enter the active station
+		-- Freshly respawned character of an eliminated player spawns in the Hub Recovery Bay
 		self._hubService:SpawnEliminatedPlayerInHub(player, entry.spawnSlot)
+		self:_broadcastPlayerStatuses()
 	elseif entry.status == "EXTRACTED" then
 		self._hubService:MoveCrewToBoardingBay({ player })
 	else
@@ -244,8 +249,14 @@ function RoundService:HandleCharacterAdded(player: Player, character: Model)
 	end
 end
 
--- Issue 01: Authoritative player elimination during active expedition
-function RoundService:EliminatePlayer(player: Player, reason: string?): (boolean, string)
+-- Remediation #2 & #4: Authoritative player elimination during active expedition.
+-- Does not heal or revive a dead character; only relocates living characters (e.g. left behind)
+-- while dead characters wait for a fresh CharacterAdded respawn into the Recovery Bay.
+function RoundService:EliminatePlayer(
+	player: Player,
+	reason: string?,
+	relocateIfAlive: boolean?
+): (boolean, string)
 	local entry = self._roster[player.UserId]
 	if not entry then
 		return false, "NotRegistered"
@@ -258,7 +269,13 @@ function RoundService:EliminatePlayer(player: Player, reason: string?): (boolean
 	entry.status = "ELIMINATED"
 	entry.diedDuringExpedition = true
 
-	if self._hubService then
+	if self._movementService then
+		self._movementService:ResetPlayerState(player)
+	end
+
+	-- Only relocate immediately if explicitly requested for a living character (e.g., left behind at station)
+	local shouldRelocateLiving = if relocateIfAlive ~= nil then relocateIfAlive else false
+	if shouldRelocateLiving and self._hubService then
 		self._hubService:SpawnEliminatedPlayerInHub(player, entry.spawnSlot)
 	end
 
@@ -266,7 +283,7 @@ function RoundService:EliminatePlayer(player: Player, reason: string?): (boolean
 		player,
 		"PlayerEliminated",
 		string.format(
-			"You were eliminated (%s) and returned to the Train Hub recovery bay.",
+			"You were eliminated (%s). Respawning in the Train Hub recovery bay.",
 			reason or "Hazard"
 		),
 		"Danger"
@@ -274,23 +291,24 @@ function RoundService:EliminatePlayer(player: Player, reason: string?): (boolean
 
 	self:_broadcastPlayerStatuses()
 
-	-- Section 3.3: Check if every active player is now eliminated
+	-- Remediation #4: Immediately terminate the active expedition phase if all active crew are now eliminated
 	if
 		self:_countLivingOrExtractedExpeditionPlayers() == 0
-		and (self._state == "EXPLORATION" or self._state == "EXTRACTION")
+		and (self._state == "TRAVEL" or self._state == "EXPLORATION" or self._state == "EXTRACTION")
 	then
 		self._lastOutcome = "FAILED"
 		self:BroadcastNotification(
 			"AllCrewEliminated",
-			"All expedition crew members were eliminated. Returning train to Hub.",
+			"All expedition crew members were eliminated. Terminating expedition and returning train to Hub.",
 			"Danger"
 		)
+		self:_enterReturnPhase()
 	end
 
 	return true, "Eliminated"
 end
 
--- Issue 04: Physical Extraction Zone validation and extraction registration
+-- Issue 04 & Remediation #1: Physical Extraction Zone validation and extraction registration
 function RoundService:TryExtractPlayer(player: Player): (boolean, string)
 	local security = self._securityService
 	if not security:ValidatePlayerInstance(player) then
@@ -362,19 +380,28 @@ function RoundService:UnregisterPlayer(player: Player)
 		self._hubService:ReleaseSpawnSlot(userId)
 	end
 
-	if self._activeExpeditionUserIds[userId] then
+	local wasInExpedition = self._activeExpeditionUserIds[userId] == true
+	if wasInExpedition then
 		self._activeExpeditionUserIds[userId] = nil
 	end
 
 	self:_broadcastPlayerStatuses()
 
-	-- Section 3.3: If all active expedition players leave during an active round, terminate safely and clean up
-	if self:_isExpeditionPhase(self._state) and self:_countActiveExpeditionPlayers() == 0 then
-		warn(
-			"[RoundService] All active expedition players left; terminating round safely and cleaning up."
-		)
-		self:CleanupRound()
-		self:_transitionTo("WAITING", 0)
+	-- Section 3.3 & Remediation #4: If all active expedition players leave or none remain alive/extracted, terminate safely
+	if self:_isExpeditionPhase(self._state) then
+		if self:_countActiveExpeditionPlayers() == 0 then
+			warn(
+				"[RoundService] All active expedition players left; terminating round safely and cleaning up."
+			)
+			self:CleanupRound()
+			self:_transitionTo("WAITING", 0)
+		elseif
+			(self._state == "TRAVEL" or self._state == "EXPLORATION" or self._state == "EXTRACTION")
+			and self:_countLivingOrExtractedExpeditionPlayers() == 0
+		then
+			self._lastOutcome = "FAILED"
+			self:_enterReturnPhase()
+		end
 	end
 end
 
@@ -520,31 +547,39 @@ function RoundService:_runStateMachineLoop()
 				task.wait(0.5)
 			end
 		elseif self._state == "INTERMISSION" then
-			if self:_waitPhaseOrAbort(GameConfig.RoundDurations.INTERMISSION, false) then
+			if
+				self:_waitPhaseOrAbort(
+					GameConfig.RoundDurations.INTERMISSION,
+					false,
+					"INTERMISSION"
+				)
+			then
 				self:_enterBoardingPhase()
 			end
 		elseif self._state == "BOARDING" then
-			if self:_waitPhaseOrAbort(GameConfig.RoundDurations.BOARDING, false) then
+			if self:_waitPhaseOrAbort(GameConfig.RoundDurations.BOARDING, false, "BOARDING") then
 				self:_lockCrewAndDepart()
 			end
 		elseif self._state == "TRAVEL" then
-			if self:_waitPhaseOrAbort(GameConfig.RoundDurations.TRAVEL, true) then
+			if self:_waitPhaseOrAbort(GameConfig.RoundDurations.TRAVEL, true, "TRAVEL") then
 				self:_enterExplorationPhase()
 			end
 		elseif self._state == "EXPLORATION" then
-			if self:_waitPhaseOrAbort(GameConfig.RoundDurations.EXPLORATION, true) then
+			if
+				self:_waitPhaseOrAbort(GameConfig.RoundDurations.EXPLORATION, true, "EXPLORATION")
+			then
 				self:_enterExtractionPhase()
 			end
 		elseif self._state == "EXTRACTION" then
-			if self:_waitPhaseOrAbort(GameConfig.RoundDurations.EXTRACTION, true) then
+			if self:_waitPhaseOrAbort(GameConfig.RoundDurations.EXTRACTION, true, "EXTRACTION") then
 				self:_enterReturnPhase()
 			end
 		elseif self._state == "RETURN" then
-			if self:_waitPhaseOrAbort(GameConfig.RoundDurations.RETURN, true) then
+			if self:_waitPhaseOrAbort(GameConfig.RoundDurations.RETURN, true, "RETURN") then
 				self:_enterResultsPhase()
 			end
 		elseif self._state == "RESULTS" then
-			if self:_waitPhaseOrAbort(GameConfig.RoundDurations.RESULTS, false) then
+			if self:_waitPhaseOrAbort(GameConfig.RoundDurations.RESULTS, false, "RESULTS") then
 				self:CleanupRound()
 				if self:_countEligibleHubPlayers() >= GameConfig.MIN_CREW_TO_START then
 					self:_startNewIntermission()
@@ -560,17 +595,35 @@ end
 
 function RoundService:_waitPhaseOrAbort(
 	durationSeconds: number,
-	requireActiveCrew: boolean
+	requireActiveCrew: boolean,
+	expectedState: NetworkTypes.RoundState?
 ): boolean
+	local startingState: NetworkTypes.RoundState = expectedState or self._state
 	local deadline = os.clock() + durationSeconds
 	local stepInterval = GameConfig.MOVEMENT_CHECK_INTERVAL
 
 	while os.clock() < deadline do
+		-- Remediation #4: If state transitioned externally (e.g., all-crew-eliminated triggered _enterReturnPhase), abort wait immediately
+		if self._state ~= startingState then
+			return false
+		end
+
 		if requireActiveCrew and self:_countActiveExpeditionPlayers() == 0 then
 			self:CleanupRound()
 			self:_transitionTo("WAITING", 0)
 			return false
 		end
+
+		-- Remediation #4: If all active expedition players are eliminated during TRAVEL, EXPLORATION, or EXTRACTION, terminate immediately
+		if
+			(self._state == "TRAVEL" or self._state == "EXPLORATION" or self._state == "EXTRACTION")
+			and self:_countLivingOrExtractedExpeditionPlayers() == 0
+		then
+			self._lastOutcome = "FAILED"
+			self:_enterReturnPhase()
+			return false
+		end
+
 		if
 			not requireActiveCrew
 			and self:_countEligibleHubPlayers() < GameConfig.MIN_CREW_TO_START
@@ -580,7 +633,7 @@ function RoundService:_waitPhaseOrAbort(
 			return false
 		end
 
-		-- Issue 03: Server-side movement speed sanity check tick
+		-- Issue 03 & Remediation #3: Server-side 3D movement sanity check tick
 		if self._movementService then
 			for _, entry in pairs(self._roster) do
 				if entry.player.Parent == Players then
@@ -603,7 +656,8 @@ function RoundService:_waitPhaseOrAbort(
 
 		task.wait(stepInterval)
 	end
-	return true
+
+	return self._state == startingState
 end
 
 function RoundService:_startNewIntermission()
@@ -695,7 +749,7 @@ function RoundService:_lockCrewAndDepart()
 end
 
 function RoundService:_enterExplorationPhase()
-	-- Move active expedition crew onto the Station 001 platform entry
+	-- Remediation #1: Move active expedition crew onto Station 001 concourse entry spawns (Z = 18..30, outside extraction zone)
 	if self._hubService then
 		for userId in pairs(self._activeExpeditionUserIds) do
 			local entry = self._roster[userId]
@@ -723,8 +777,12 @@ function RoundService:_enterExtractionPhase()
 	)
 end
 
--- Issue 04: Physical Extraction Platform proximity, survival, and eligibility check on departure
+-- Issue 04 & Remediation #2: Physical Extraction Platform proximity, survival, and eligibility check on departure
 function RoundService:_enterReturnPhase()
+	if self._state == "RETURN" then
+		return
+	end
+
 	local extractedCount = 0
 
 	for userId in pairs(self._activeExpeditionUserIds) do
@@ -748,7 +806,11 @@ function RoundService:_enterReturnPhase()
 					-- Player failed to reach the physical extraction platform before departure
 					entry.status = "ELIMINATED"
 					entry.diedDuringExpedition = true
+					if self._movementService then
+						self._movementService:ResetPlayerState(entry.player)
+					end
 					if self._hubService then
+						-- Only pivots if character is currently alive; never heals a dead humanoid
 						self._hubService:SpawnEliminatedPlayerInHub(entry.player, entry.spawnSlot)
 					end
 					self:SendNotificationToPlayer(

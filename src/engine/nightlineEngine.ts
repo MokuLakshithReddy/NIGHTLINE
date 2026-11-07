@@ -128,13 +128,18 @@ export const GAME_CONFIG = {
   WALK_SPEED: 14,
   SPRINT_SPEED: 22,
   MOVEMENT_SPEED_TOLERANCE: 8,
+  MOVEMENT_STEP_SLACK: 2.0,
+  MAX_JUMP_UPWARD_SPEED: 55,
+  VERTICAL_APEX_TOLERANCE: 6.0,
+  MAX_FALL_SPEED: 160,
+  VERTICAL_FALL_TOLERANCE: 12.0,
   MOVEMENT_CHECK_INTERVAL: 0.25,
   SPRINT_COOLDOWN_SECONDS: 0.1,
   DEFAULT_MAX_HEALTH: 100,
   MAX_INTERACTION_DISTANCE: 14.0,
   EXTRACTION_ZONE_POSITION: { x: 15, z: -8 } as Vec2,
   EXTRACTION_ZONE_SIZE: { w: 8, d: 18 },
-  EXTRACTION_ZONE_RADIUS: 13.0,
+  EXTRACTION_ZONE_RADIUS: 12.0,
   PROMPT_COOLDOWN_SECONDS: 0.5,
   EQUIPMENT_COOLDOWN_SECONDS: 0.25,
   REMOTE_RATE_LIMIT_WINDOW: 1.0,
@@ -196,6 +201,16 @@ export const BOARDING_BAY_OFFSETS: Vec2[] = [
   { x: 4, z: -19 },
   { x: -4, z: -14 },
   { x: 4, z: -14 },
+];
+
+// Fix 1: Station 001 arrival spawn slots strictly outside ExtractionPlatformZone (x=15, z=-8, r=12)
+export const STATION_ENTRY_OFFSETS: Vec2[] = [
+  { x: 14, z: 18 },
+  { x: 18, z: 18 },
+  { x: 14, z: 24 },
+  { x: 18, z: 24 },
+  { x: 14, z: 30 },
+  { x: 18, z: 30 },
 ];
 
 export const HUB_INTERACTABLES: HubInteractable[] = [
@@ -472,7 +487,7 @@ export class NightlineServerEngine {
       }
 
       if (player.status === 'IN_EXPEDITION' || player.status === 'EXTRACTED') {
-        const stationSpot = BOARDING_BAY_OFFSETS[idx];
+        const stationSpot = STATION_ENTRY_OFFSETS[idx];
         player.position = { x: stationSpot.x, z: stationSpot.z };
         return { ok: true, spawnZone: 'ACTIVE_STATION' };
       }
@@ -514,7 +529,7 @@ export class NightlineServerEngine {
     );
 
     if (
-      (this.state === 'EXPLORATION' || this.state === 'EXTRACTION') &&
+      (this.state === 'TRAVEL' || this.state === 'EXPLORATION' || this.state === 'EXTRACTION') &&
       this.countSurvivingExpeditionPlayers() === 0
     ) {
       this.lastOutcome = 'FAILED';
@@ -606,7 +621,8 @@ export class NightlineServerEngine {
   public validatePlayerMovement(
     userId: number,
     proposedPosition: Vec2,
-    dtSeconds: number
+    dtSeconds: number,
+    deltaY = 0
   ): { ok: boolean; reason: string; correctedPosition: Vec2 } {
     const player = this.players.get(userId);
     if (!player) {
@@ -621,7 +637,12 @@ export class NightlineServerEngine {
     const maxAllowedSpeed =
       (player.isSprinting ? GAME_CONFIG.SPRINT_SPEED : GAME_CONFIG.WALK_SPEED) +
       GAME_CONFIG.MOVEMENT_SPEED_TOLERANCE;
-    const maxAllowedDistance = maxAllowedSpeed * validDt + 2.5;
+    const maxAllowedDistance = maxAllowedSpeed * validDt + GAME_CONFIG.MOVEMENT_STEP_SLACK;
+
+    const maxAllowedUpward =
+      GAME_CONFIG.MAX_JUMP_UPWARD_SPEED * validDt + GAME_CONFIG.VERTICAL_APEX_TOLERANCE;
+    const maxAllowedDownward =
+      GAME_CONFIG.MAX_FALL_SPEED * validDt + GAME_CONFIG.VERTICAL_FALL_TOLERANCE;
 
     if (distance > maxAllowedDistance) {
       this.logRemote(
@@ -635,12 +656,44 @@ export class NightlineServerEngine {
       this.pushNotification(
         userId,
         'MovementRubberbanded',
-        `Server MovementService rejected anomalous displacement (${distance.toFixed(1)} studs in ${validDt.toFixed(2)}s) and rubberbanded character.`,
+        `Server MovementService rejected anomalous horizontal displacement (${distance.toFixed(1)} studs in ${validDt.toFixed(2)}s) and rubberbanded character.`,
         'Warning'
       );
       return {
         ok: false,
         reason: 'SpeedAnomalyRubberbanded',
+        correctedPosition: { ...player.position },
+      };
+    }
+
+    if (deltaY > maxAllowedUpward) {
+      this.logRemote(
+        'Server->Client',
+        'MovementCheck',
+        player.displayName,
+        false,
+        'RubberbandedVerticalUpwardAnomaly',
+        `deltaY=+${deltaY.toFixed(1)} > max=+${maxAllowedUpward.toFixed(1)} studs`
+      );
+      return {
+        ok: false,
+        reason: 'RubberbandedVerticalUpwardAnomaly',
+        correctedPosition: { ...player.position },
+      };
+    }
+
+    if (deltaY < -maxAllowedDownward) {
+      this.logRemote(
+        'Server->Client',
+        'MovementCheck',
+        player.displayName,
+        false,
+        'RubberbandedVerticalDownwardAnomaly',
+        `deltaY=${deltaY.toFixed(1)} < min=-${maxAllowedDownward.toFixed(1)} studs`
+      );
+      return {
+        ok: false,
+        reason: 'RubberbandedVerticalDownwardAnomaly',
         correctedPosition: { ...player.position },
       };
     }
@@ -901,6 +954,15 @@ export class NightlineServerEngine {
 
   public enterExplorationPhase(): void {
     this.runtimeStationObjectsCount = 12; // Tracked runtime station markers to verify cleanup on round end
+    // Fix 1: Spawn all active expedition crew at Station 001 entry spawns (x=14..18, z=18..30), strictly outside ExtractionPlatformZone
+    for (const userId of this.activeExpeditionUserIds) {
+      const player = this.players.get(userId);
+      if (player && player.status === 'IN_EXPEDITION') {
+        const slot = this.getPlayerSpawnSlot(userId);
+        const spot = STATION_ENTRY_OFFSETS[(slot - 1) % STATION_ENTRY_OFFSETS.length];
+        player.position = { x: spot.x, z: spot.z };
+      }
+    }
     this.transitionTo('EXPLORATION', GAME_CONFIG.RoundDurations.EXPLORATION);
     this.broadcastObjectivePreview();
     this.pushNotification(

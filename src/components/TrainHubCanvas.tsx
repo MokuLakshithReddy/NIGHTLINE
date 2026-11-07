@@ -5,6 +5,7 @@ import {
   HUB_SPAWN_OFFSETS,
   ELIMINATED_SPAWN_OFFSETS,
   BOARDING_BAY_OFFSETS,
+  STATION_ENTRY_OFFSETS,
   GAME_CONFIG,
   HubInteractable,
 } from '../engine/nightlineEngine';
@@ -422,6 +423,21 @@ export const TrainHubCanvas: React.FC<TrainHubCanvasProps> = ({
         ctx.fillStyle = '#fbbf24';
         ctx.font = `600 ${Math.max(8, Math.floor(scale * 0.75))}px "JetBrains Mono", monospace`;
         ctx.fillText(`B${idx + 1}`, pos.sx, pos.sy + 3);
+      });
+
+      // 6 Station 001 Entry Spawns (Fix 1: E1..E6 at X = 14..18, Z = 18..30, outside ExtractionPlatformZone)
+      STATION_ENTRY_OFFSETS.forEach((entrySpot, idx) => {
+        const pos = worldToScreen(entrySpot.x, entrySpot.z);
+        const spotSize = 2.6 * scale;
+        ctx.fillStyle = 'rgba(168, 85, 247, 0.16)';
+        ctx.strokeStyle = 'rgba(168, 85, 247, 0.65)';
+        ctx.lineWidth = 1.2;
+        ctx.fillRect(pos.sx - spotSize / 2, pos.sy - spotSize / 2, spotSize, spotSize);
+        ctx.strokeRect(pos.sx - spotSize / 2, pos.sy - spotSize / 2, spotSize, spotSize);
+
+        ctx.fillStyle = '#c084fc';
+        ctx.font = `600 ${Math.max(7, Math.floor(scale * 0.7))}px "JetBrains Mono", monospace`;
+        ctx.fillText(`E${idx + 1}`, pos.sx, pos.sy + 3);
       });
 
       // Render Tagged Interactables (DestinationConsole, Equipment Lockers, Boarding Gate, ExtractionPlatformZone)

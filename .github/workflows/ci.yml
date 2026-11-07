@@ -1,0 +1,68 @@
+name: NIGHTLINE Luau & Rojo CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - 'fix/**'
+      - 'feat/**'
+  pull_request:
+    branches:
+      - main
+      - master
+
+jobs:
+  luau-rojo-and-runtime-ci:
+    name: Format, Lint, Typecheck, Rojo Build & Luau VM Tests
+    runs-on: ubuntu-latest
+
+    env:
+      NIGHTLINE_TOOLCHAIN_DIR: /tmp/roblox-tools
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Bootstrap Luau, Rojo, StyLua, Selene & Roblox Global Types
+        run: bash scripts/bootstrap-toolchain.sh
+
+      - name: Check Luau Formatting (StyLua)
+        run: /tmp/roblox-tools/stylua --check roblox
+
+      - name: Lint Luau Source (Selene)
+        run: |
+          cp selene.toml /tmp/roblox-tools/selene.toml
+          (cd /tmp/roblox-tools && /tmp/roblox-tools/selene --config /tmp/roblox-tools/selene.toml "${GITHUB_WORKSPACE}/roblox")
+
+      - name: Generate Rojo Sourcemap & Build Place File (.rbxl)
+        run: |
+          /tmp/roblox-tools/rojo sourcemap default.project.json -o /tmp/sourcemap.json
+          /tmp/roblox-tools/rojo build default.project.json -o /tmp/NIGHTLINE_Last_Train.rbxl
+          test -s /tmp/NIGHTLINE_Last_Train.rbxl
+
+      - name: Strict Luau Static Type Checking (luau-analyze + luau-lsp analyze + globalTypes.d.luau)
+        run: |
+          /tmp/roblox-tools/luau-analyze roblox/ReplicatedStorage/Shared/Types/NetworkTypes.lua
+          /tmp/roblox-tools/luau-lsp analyze \
+            --base-luaurc=.luaurc \
+            --sourcemap=/tmp/sourcemap.json \
+            --definitions=/tmp/roblox-tools/globalTypes.d.luau \
+            roblox
+
+      - name: Execute Luau Runtime VM & Workbench Regression Tests
+        run: npm test
+
+      - name: Typecheck & Build Interactive Workbench UI
+        run: |
+          npm run lint
+          npm run build

@@ -1,12 +1,12 @@
 --!strict
 --[[
 	MovementService.lua
-	Server-authoritative sprint control and movement sanity validation (Issue 03).
+	Server-authoritative sprint control and 3D movement sanity validation (Issue 03 & Remediation #3).
 	Responsibilities:
 	- Owns per-player sprint state and sets Humanoid.WalkSpeed on the server.
-	- Validates sprint eligibility (player must be alive and not rate-limited).
-	- Runs periodic movement sanity checks (ValidateMovementTick) to detect client speed/teleport exploits
-	  while respecting server-authored teleports (NotifyServerTeleport).
+	- Validates sprint eligibility (player must be alive, not eliminated, and not rate-limited).
+	- Validates both horizontal AND vertical displacement while preserving legitimate jumps,
+	  gravity falls, and server-authorized teleports (NotifyServerTeleport).
 ]]
 
 local Players = game:GetService("Players")
@@ -17,6 +17,7 @@ local GameConfig = require(ReplicatedStorage.Shared.Config.GameConfig)
 type PlayerMovementRecord = {
 	isSprinting: boolean,
 	lastValidPosition: Vector3?,
+	teleportTargetPosition: Vector3?,
 	lastSampleTime: number,
 	teleportGraceUntil: number,
 	violationCount: number,
@@ -64,6 +65,7 @@ function MovementService:EnsureRecord(userId: number): PlayerMovementRecord
 	local record: PlayerMovementRecord = {
 		isSprinting = false,
 		lastValidPosition = nil,
+		teleportTargetPosition = nil,
 		lastSampleTime = os.clock(),
 		teleportGraceUntil = 0,
 		violationCount = 0,
@@ -72,12 +74,25 @@ function MovementService:EnsureRecord(userId: number): PlayerMovementRecord
 	return record
 end
 
+function MovementService:ResetPlayerState(player: Player)
+	local record = self:EnsureRecord(player.UserId)
+	record.isSprinting = false
+	local character = player.Character
+	if character then
+		local humanoid = character:FindFirstChildOfClass("Humanoid")
+		if humanoid and humanoid.Health > 0 then
+			humanoid.WalkSpeed = GameConfig.WALK_SPEED
+		end
+	end
+end
+
 function MovementService:NotifyServerTeleport(player: Player, targetPosition: Vector3)
 	local record = self:EnsureRecord(player.UserId)
 	local now = os.clock()
 	record.lastValidPosition = targetPosition
+	record.teleportTargetPosition = targetPosition
 	record.lastSampleTime = now
-	record.teleportGraceUntil = now + 1.0
+	record.teleportGraceUntil = now + GameConfig.TELEPORT_GRACE_SECONDS
 end
 
 function MovementService:IsPlayerSprinting(player: Player): boolean
@@ -143,33 +158,96 @@ function MovementService:ValidatePlayerMovement(
 	end
 
 	local currentPos = rootPart.Position
-	if now < record.teleportGraceUntil or not record.lastValidPosition then
+	if not record.lastValidPosition then
 		record.lastValidPosition = currentPos
 		record.lastSampleTime = now
-		return true, "TeleportGrace"
+		return true, "InitialSample"
+	end
+
+	-- Remediation #3: Preserve server-authorized teleports while bounding movement near the teleport target
+	if now < record.teleportGraceUntil and record.teleportTargetPosition then
+		local tpTarget = record.teleportTargetPosition
+		local tpHorizDelta =
+			Vector3.new(currentPos.X - tpTarget.X, 0, currentPos.Z - tpTarget.Z).Magnitude
+		local tpVertDelta = math.abs(currentPos.Y - tpTarget.Y)
+		local maxGraceHoriz = (GameConfig.SPRINT_SPEED + GameConfig.MOVEMENT_SPEED_TOLERANCE)
+				* GameConfig.TELEPORT_GRACE_SECONDS
+			+ GameConfig.MOVEMENT_STEP_SLACK
+		local maxGraceVert = GameConfig.MAX_JUMP_UPWARD_SPEED * 0.5
+			+ GameConfig.VERTICAL_APEX_TOLERANCE
+
+		if tpHorizDelta <= maxGraceHoriz and tpVertDelta <= maxGraceVert then
+			record.lastValidPosition = currentPos
+			record.lastSampleTime = now
+			return true, "TeleportGrace"
+		end
 	end
 
 	local elapsed = math.max(dtSeconds, now - record.lastSampleTime, 0.05)
 	local prevPos = record.lastValidPosition
+
+	-- 1. Horizontal displacement check (preserves walk/sprint + network jitter slack)
 	local horizontalDelta =
 		Vector3.new(currentPos.X - prevPos.X, 0, currentPos.Z - prevPos.Z).Magnitude
-	local maxAllowedSpeed = GameConfig.SPRINT_SPEED + GameConfig.MOVEMENT_SPEED_TOLERANCE
-	local maxAllowedDistance = maxAllowedSpeed * elapsed
+	local baseHorizSpeed = if record.isSprinting
+		then GameConfig.SPRINT_SPEED
+		else GameConfig.WALK_SPEED
+	local maxAllowedHorizDistance = (baseHorizSpeed + GameConfig.MOVEMENT_SPEED_TOLERANCE) * elapsed
+		+ GameConfig.MOVEMENT_STEP_SLACK
 
-	if horizontalDelta > maxAllowedDistance then
+	if horizontalDelta > maxAllowedHorizDistance then
 		record.violationCount += 1
 		warn(
 			string.format(
-				"[MovementService] Movement speed anomaly for %s: moved %.1f studs in %.2fs (max %.1f). Restoring server position.",
+				"[MovementService] Horizontal speed anomaly for %s: moved %.1f studs in %.2fs (max %.1f). Restoring server position.",
 				player.Name,
 				horizontalDelta,
 				elapsed,
-				maxAllowedDistance
+				maxAllowedHorizDistance
 			)
 		)
 		character:PivotTo(CFrame.new(prevPos))
 		record.lastSampleTime = now
 		return false, "RubberbandedSpeedAnomaly"
+	end
+
+	-- 2. Vertical displacement check (preserves legitimate jumps and gravity falls; blocks vertical fly/noclip teleports)
+	local verticalDelta = currentPos.Y - prevPos.Y
+	local maxAllowedUpwardDistance = GameConfig.MAX_JUMP_UPWARD_SPEED * elapsed
+		+ GameConfig.VERTICAL_APEX_TOLERANCE
+	local maxAllowedDownwardDistance = GameConfig.MAX_FALL_SPEED * elapsed
+		+ GameConfig.VERTICAL_FALL_TOLERANCE
+
+	if verticalDelta > maxAllowedUpwardDistance then
+		record.violationCount += 1
+		warn(
+			string.format(
+				"[MovementService] Vertical upward anomaly for %s: moved +%.1f studs Y in %.2fs (max +%.1f). Restoring server position.",
+				player.Name,
+				verticalDelta,
+				elapsed,
+				maxAllowedUpwardDistance
+			)
+		)
+		character:PivotTo(CFrame.new(prevPos))
+		record.lastSampleTime = now
+		return false, "RubberbandedVerticalUpwardAnomaly"
+	end
+
+	if verticalDelta < -maxAllowedDownwardDistance then
+		record.violationCount += 1
+		warn(
+			string.format(
+				"[MovementService] Vertical downward anomaly for %s: moved %.1f studs Y in %.2fs (max -%.1f). Restoring server position.",
+				player.Name,
+				verticalDelta,
+				elapsed,
+				maxAllowedDownwardDistance
+			)
+		)
+		character:PivotTo(CFrame.new(prevPos))
+		record.lastSampleTime = now
+		return false, "RubberbandedVerticalDownwardAnomaly"
 	end
 
 	record.lastValidPosition = currentPos

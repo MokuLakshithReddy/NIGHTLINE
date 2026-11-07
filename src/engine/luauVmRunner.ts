@@ -1,21 +1,29 @@
 // luauVmRunner.ts
 // Executes the actual NIGHTLINE Roblox Luau modules (/roblox/) inside the
-// official Luau VM binary (luau), alongside luau-lsp analyze, selene, stylua,
-// and rojo build (Rojo 7.7.1).
+// official Luau VM binary (luau), alongside luau-cli (luau-analyze), luau-lsp analyze,
+// selene, stylua, and rojo build (Rojo 7.7.1).
 //
-// This directly addresses Issue 05: automated tests now compile, type-check, lint,
-// and execute the real Luau source files from /roblox rather than relying solely
-// on the TypeScript workbench mirror.
+// IMPORTANT HARNESS BOUNDARY:
+// The Luau VM harness below executes the real Luau source files from `/roblox` inside
+// the official `luau` runtime against a deterministic DataModel API contract shim.
+// It deliberately does NOT pretend to simulate Roblox 3D rigid-body physics, collision
+// geometry, or automatic C++ character respawning:
+//   1. Setting `Humanoid.Health = 0` marks that Humanoid instance permanently dead.
+//      Attempting to set `Humanoid.Health > 0` on a dead Humanoid or calling `PivotTo`
+//      on a dead Character throws an explicit runtime error.
+//   2. Respawning requires explicitly calling `player:LoadCharacter()`, which allocates
+//      a brand-new `Model` + `Humanoid` + `HumanoidRootPart` and fires `player.CharacterAdded`.
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 const ROOT_DIR = process.cwd();
-const TOOLS_DIR = '/tmp/roblox-tools';
+const TOOLS_DIR = process.env.NIGHTLINE_TOOLCHAIN_DIR || '/tmp/roblox-tools';
 
 export function ensureToolchainInstalled(): {
   luauBin: string;
+  luauAnalyzeBin: string;
   luauLspBin: string;
   rojoBin: string;
   seleneBin: string;
@@ -23,20 +31,44 @@ export function ensureToolchainInstalled(): {
   globalTypesPath: string;
 } {
   const luauBin = path.join(TOOLS_DIR, 'luau');
+  const luauAnalyzeBin = path.join(TOOLS_DIR, 'luau-analyze');
   const luauLspBin = path.join(TOOLS_DIR, 'luau-lsp');
   const rojoBin = path.join(TOOLS_DIR, 'rojo');
   const seleneBin = path.join(TOOLS_DIR, 'selene');
   const styluaBin = path.join(TOOLS_DIR, 'stylua');
   const globalTypesPath = path.join(TOOLS_DIR, 'globalTypes.d.luau');
 
-  if (!fs.existsSync(luauBin) || !fs.existsSync(rojoBin)) {
-    throw new Error(
-      `Luau/Rojo toolchain not found in ${TOOLS_DIR}. Ensure toolchain binaries are unpacked.`
-    );
+  const requiredFiles = [
+    luauBin,
+    luauAnalyzeBin,
+    luauLspBin,
+    rojoBin,
+    seleneBin,
+    styluaBin,
+    globalTypesPath,
+  ];
+
+  const missingAny = requiredFiles.some((filePath) => !fs.existsSync(filePath));
+  if (missingAny) {
+    const bootstrapScript = path.join(ROOT_DIR, 'scripts', 'bootstrap-toolchain.sh');
+    if (!fs.existsSync(bootstrapScript)) {
+      throw new Error(
+        `Missing toolchain binaries in ${TOOLS_DIR} and bootstrap script not found at ${bootstrapScript}.`
+      );
+    }
+    execFileSync('bash', [bootstrapScript], {
+      cwd: ROOT_DIR,
+      stdio: 'inherit',
+      env: {
+        ...process.env,
+        NIGHTLINE_TOOLCHAIN_DIR: TOOLS_DIR,
+      },
+    });
   }
 
   return {
     luauBin,
+    luauAnalyzeBin,
     luauLspBin,
     rojoBin,
     seleneBin,
@@ -126,7 +158,8 @@ export function runActualLuauModulesInVm(): {
   ];
 
   const robloxEnvPreamble = `
--- Mock Roblox Engine Runtime Environment for Standalone Luau VM Execution
+-- Mock Roblox DataModel API Contract Environment for Standalone Luau VM Execution
+-- Note: Does NOT simulate 3D rigid-body physics or automatic character respawning.
 local VirtualClock = 1000.0
 local VirtualTime = 1700000000
 local warn = function(...)
@@ -241,13 +274,14 @@ function Instance.new(className)
 		Parent = nil,
 		CFrame = CFrame.new(0, 0, 0),
 		Position = Vector3.new(0, 0, 0),
+		Health = 100,
+		IsDead = false,
 	}
 	local inst = {
 		ClassName = className,
 		Name = className,
 		Size = Vector3.new(1, 1, 1),
 		Enabled = true,
-		Health = 100,
 		MaxHealth = 100,
 		WalkSpeed = 14,
 		Died = createSignal(),
@@ -295,6 +329,10 @@ function Instance.new(className)
 			return self._attributes[k]
 		end,
 		PivotTo = function(self, targetCFrame)
+			local hum = self:FindFirstChildOfClass("Humanoid")
+			if hum and hum._state.IsDead then
+				error("Forbidden: Attempted to PivotTo a dead Character model (" .. tostring(self.Name) .. ")")
+			end
 			self.CFrame = targetCFrame
 			local hrp = self:FindFirstChild("HumanoidRootPart")
 			if hrp then
@@ -322,7 +360,7 @@ function Instance.new(className)
 
 	return setmetatable(inst, {
 		__index = function(t, k)
-			if k == "Parent" or k == "CFrame" or k == "Position" then
+			if k == "Parent" or k == "CFrame" or k == "Position" or k == "Health" then
 				return t._state[k]
 			end
 			local raw = rawget(t, k)
@@ -355,6 +393,14 @@ function Instance.new(className)
 			elseif k == "Position" then
 				t._state.Position = v
 				t._state.CFrame = CFrame.new(v)
+			elseif k == "Health" then
+				if t.ClassName == "Humanoid" and t._state.IsDead and v > 0 then
+					error("Forbidden: Attempted to restore Health on a dead Humanoid instance")
+				end
+				t._state.Health = v
+				if t.ClassName == "Humanoid" and v <= 0 then
+					t._state.IsDead = true
+				end
 			else
 				rawset(t, k, v)
 			end
@@ -506,7 +552,7 @@ end
 
   const luauAssertions = `
 -- ============================================================================
--- Execute Real NIGHTLINE Luau Services & Verify Issues 01, 02, 03, 04, 05
+-- Execute Real NIGHTLINE Luau Services & Verify All Remediation Fixes
 -- ============================================================================
 
 local GameConfig = require(ReplicatedStorage.Shared.Config.GameConfig)
@@ -548,26 +594,47 @@ InventoryService:Start()
 RoundService:Start()
 InteractionService:Start()
 
+local CharacterSpawnCounter = 0
+
+local function buildFreshCharacterModel(playerName)
+	CharacterSpawnCounter += 1
+	local char = Instance.new("Model")
+	char.Name = string.format("%s_Character_%d", playerName, CharacterSpawnCounter)
+	local hrp = Instance.new("Part")
+	hrp.Name = "HumanoidRootPart"
+	hrp.Parent = char
+	local hum = Instance.new("Humanoid")
+	hum.Name = "Humanoid"
+	hum.Health = GameConfig.DEFAULT_MAX_HEALTH
+	hum.MaxHealth = GameConfig.DEFAULT_MAX_HEALTH
+	hum.WalkSpeed = GameConfig.WALK_SPEED
+	hum.Parent = char
+	char.PrimaryPart = hrp
+	return char
+end
+
 local function createMockPlayer(userId, name)
 	local p = Instance.new("Player")
 	p.UserId = userId
 	p.Name = name
 	p.DisplayName = name
 
-	local char = Instance.new("Model")
-	char.Name = name .. "_Character"
-	local hrp = Instance.new("Part")
-	hrp.Name = "HumanoidRootPart"
-	hrp.Parent = char
-	local hum = Instance.new("Humanoid")
-	hum.Name = "Humanoid"
-	hum.Health = 100
-	hum.MaxHealth = 100
-	hum.WalkSpeed = GameConfig.WALK_SPEED
-	hum.Parent = char
-	char.PrimaryPart = hrp
-	p.Character = char
-	char.Parent = Workspace
+	-- Explicit LoadCharacter method that destroys the old character, constructs a
+	-- brand-new Character + Humanoid instance, and fires CharacterAdded.
+	function p:LoadCharacter()
+		if self.Character then
+			self.Character:Destroy()
+		end
+		local freshChar = buildFreshCharacterModel(self.Name)
+		self.Character = freshChar
+		freshChar.Parent = Workspace
+		self.CharacterAdded:Fire(freshChar)
+		return freshChar
+	end
+
+	local initialChar = buildFreshCharacterModel(name)
+	p.Character = initialChar
+	initialChar.Parent = Workspace
 
 	p.Parent = Players
 	Players.PlayerAdded:Fire(p)
@@ -597,13 +664,13 @@ assert(RoundService:GetPlayerSpawnSlot(p4) == 2, "P4 must receive freed slot 2 w
 print("[LUAU VM PASS] Issue 02: Explicit spawn-slot allocation & release verified.")
 
 -- ----------------------------------------------------------------------------
--- TEST 2 (Issue 03): Server-Validated Sprint Authority & Speed Sanity Check
+-- TEST 2 (Fix 3 & Issue 03): Horizontal + Vertical Movement Validation
+-- (Legitimate jumps, gravity falls, server teleports vs horizontal/vertical exploits)
 -- ----------------------------------------------------------------------------
 remotes.RequestSprint._mockLocalPlayer = p1
 InputController:Init({ uiController = nil, remotes = remotes })
 InputController:Start()
 
--- Trigger client InputController:RequestSprint(true) -> Fires RequestSprint to MovementService on server
 InputController:RequestSprint(true)
 local p1Humanoid = p1.Character:FindFirstChildOfClass("Humanoid")
 assert(p1Humanoid.WalkSpeed == GameConfig.SPRINT_SPEED, "Server MovementService must set WalkSpeed to SPRINT_SPEED (22)")
@@ -611,76 +678,223 @@ assert(p1Humanoid.WalkSpeed == GameConfig.SPRINT_SPEED, "Server MovementService 
 InputController:RequestSprint(false)
 assert(p1Humanoid.WalkSpeed == GameConfig.WALK_SPEED, "Server MovementService must restore WalkSpeed to WALK_SPEED (14)")
 
--- Advance clock past teleport grace window and test speed-hack / teleport exploit detection
+-- Advance clock past initial spawn teleport grace window
 advanceVirtualClock(2.0)
 local okBaseline = MovementService:ValidatePlayerMovement(p1, 0.25)
 assert(okBaseline == true, "Baseline stationary position must be valid")
 
--- Simulate client teleporting 90 studs in 0.25s without server permission
-local validBeforeHack = p1.Character.HumanoidRootPart.Position
+-- 2A: Legitimate Jump (+11 studs upward in 0.25s) -> Must be accepted
+local posBeforeJump = p1.Character.HumanoidRootPart.Position
 advanceVirtualClock(0.25)
-p1.Character:PivotTo(CFrame.new(validBeforeHack.X, validBeforeHack.Y, validBeforeHack.Z - 90))
-local okHack, hackReason = MovementService:ValidatePlayerMovement(p1, 0.25)
-assert(okHack == false and hackReason == "RubberbandedSpeedAnomaly", "MovementService must reject speed exploit")
+p1.Character:PivotTo(CFrame.new(posBeforeJump.X, posBeforeJump.Y + 11, posBeforeJump.Z - 3))
+local okJump, jumpReason = MovementService:ValidatePlayerMovement(p1, 0.25)
+assert(okJump == true and jumpReason == "ValidMovement", "Legitimate upward jump (+11 studs Y in 0.25s) must be accepted")
+
+-- 2B: Legitimate Gravity Fall (-28 studs downward in 0.25s) -> Must be accepted
+local posBeforeFall = p1.Character.HumanoidRootPart.Position
+advanceVirtualClock(0.25)
+p1.Character:PivotTo(CFrame.new(posBeforeFall.X, posBeforeFall.Y - 28, posBeforeFall.Z - 2))
+local okFall, fallReason = MovementService:ValidatePlayerMovement(p1, 0.25)
+assert(okFall == true and fallReason == "ValidMovement", "Legitimate gravity fall (-28 studs Y in 0.25s) must be accepted")
+
+-- 2C: Server-Authorized Teleport (NotifyServerTeleport) -> Must be accepted
+local authorizedTarget = Vector3.new(-5, 3, 12)
+MovementService:NotifyServerTeleport(p1, authorizedTarget)
+p1.Character:PivotTo(CFrame.new(authorizedTarget))
+advanceVirtualClock(0.1)
+local okAuthTeleport, authTeleportReason = MovementService:ValidatePlayerMovement(p1, 0.1)
+assert(okAuthTeleport == true and authTeleportReason == "TeleportGrace", "Server-authorized teleport must be accepted within grace window")
+
+-- Advance past teleport grace window before testing exploits
+advanceVirtualClock(1.5)
+MovementService:ValidatePlayerMovement(p1, 0.25)
+
+-- 2D: Horizontal Speed/Teleport Exploit (90 studs in 0.25s) -> Must be rejected & rubberbanded
+local validBeforeHorizHack = p1.Character.HumanoidRootPart.Position
+advanceVirtualClock(0.25)
+p1.Character:PivotTo(CFrame.new(validBeforeHorizHack.X, validBeforeHorizHack.Y, validBeforeHorizHack.Z - 90))
+local okHorizHack, horizHackReason = MovementService:ValidatePlayerMovement(p1, 0.25)
+assert(okHorizHack == false and horizHackReason == "RubberbandedSpeedAnomaly", "Horizontal speed exploit must be rejected")
 assert(
-	(p1.Character.HumanoidRootPart.Position - validBeforeHack).Magnitude < 0.01,
-	"MovementService must rubberband character back to last valid server position"
+	(p1.Character.HumanoidRootPart.Position - validBeforeHorizHack).Magnitude < 0.01,
+	"MovementService must rubberband horizontal speed exploit back to last valid server position"
 )
-print("[LUAU VM PASS] Issue 03: Server-owned sprint authority & anti-speed-exploit rubberbanding verified.")
+
+-- 2E: Vertical Upward Fly/SuperJump Exploit (+45 studs Y in 0.25s) -> Must be rejected & rubberbanded
+local validBeforeUpHack = p1.Character.HumanoidRootPart.Position
+advanceVirtualClock(0.25)
+p1.Character:PivotTo(CFrame.new(validBeforeUpHack.X, validBeforeUpHack.Y + 45, validBeforeUpHack.Z))
+local okUpHack, upHackReason = MovementService:ValidatePlayerMovement(p1, 0.25)
+assert(okUpHack == false and upHackReason == "RubberbandedVerticalUpwardAnomaly", "Vertical upward fly exploit must be rejected")
+assert(
+	(p1.Character.HumanoidRootPart.Position - validBeforeUpHack).Magnitude < 0.01,
+	"MovementService must rubberband vertical upward exploit back to last valid server position"
+)
+
+-- 2F: Vertical Downward Noclip Exploit (-120 studs Y in 0.25s) -> Must be rejected & rubberbanded
+local validBeforeDownHack = p1.Character.HumanoidRootPart.Position
+advanceVirtualClock(0.25)
+p1.Character:PivotTo(CFrame.new(validBeforeDownHack.X, validBeforeDownHack.Y - 120, validBeforeDownHack.Z))
+local okDownHack, downHackReason = MovementService:ValidatePlayerMovement(p1, 0.25)
+assert(okDownHack == false and downHackReason == "RubberbandedVerticalDownwardAnomaly", "Vertical downward noclip exploit must be rejected")
+assert(
+	(p1.Character.HumanoidRootPart.Position - validBeforeDownHack).Magnitude < 0.01,
+	"MovementService must rubberband vertical downward exploit back to last valid server position"
+)
+print("[LUAU VM PASS] Fix 3 & Issue 03: Horizontal + vertical movement validation (jumps, falls, teleports, exploits) verified.")
 
 -- ----------------------------------------------------------------------------
--- TEST 3 (Issue 01): Player-State-Aware Respawning & Elimination Isolation
+-- TEST 3 (Fix 1): All 6 Station Entry Spawns Are Strictly Outside Extraction Zone
+-- & No Player Is Automatically Extracted Upon Entering Station or Extraction Phase
 -- ----------------------------------------------------------------------------
+local p5 = createMockPlayer(105, "Kestrel")
+local p6 = createMockPlayer(106, "Rook")
+local p7 = createMockPlayer(107, "Vesper")
+local allSixPlayers = { p1, p4, p3, p5, p6, p7 }
+
+assert(#allSixPlayers == 6, "Must have 6 active players occupying slots 1..6")
+for slotIdx = 1, 6 do
+	local spawnPos = GameConfig.STATION_ENTRY_SPAWNS[slotIdx]
+	assert(spawnPos ~= nil, "Station entry spawn must exist for slot " .. tostring(slotIdx))
+	assert(
+		HubService:IsPositionInExtractionZone(spawnPos) == false,
+		"Station entry spawn slot " .. tostring(slotIdx) .. " must be strictly outside ExtractionPlatformZone"
+	)
+end
+
 RoundService:_startNewIntermission()
 RoundService:_enterBoardingPhase()
 RoundService:_lockCrewAndDepart()
 RoundService:_enterExplorationPhase()
 
 assert(RoundService:GetState() == "EXPLORATION", "RoundService must be in EXPLORATION")
-assert(RoundService:GetPlayerStatus(p1) == "IN_EXPEDITION", "P1 must be IN_EXPEDITION")
-assert(RoundService:GetPlayerStatus(p3) == "IN_EXPEDITION", "P3 must be IN_EXPEDITION")
-assert(RoundService:GetPlayerStatus(p4) == "IN_EXPEDITION", "P4 must be IN_EXPEDITION")
 
--- P1 dies to monster/hazard during active expedition -> Humanoid.Died fires
-p1Humanoid.Health = 0
-p1Humanoid.Died:Fire()
-assert(RoundService:GetPlayerStatus(p1) == "ELIMINATED", "Dying during expedition must mark player ELIMINATED")
+for _, player in ipairs(allSixPlayers) do
+	assert(RoundService:GetPlayerStatus(player) == "IN_EXPEDITION", player.Name .. " must be IN_EXPEDITION upon station arrival")
+	assert(
+		HubService:IsPlayerInExtractionZone(player) == false,
+		player.Name .. " (slot " .. tostring(RoundService:GetPlayerSpawnSlot(player)) .. ") must NOT spawn inside ExtractionPlatformZone"
+	)
+end
 
--- P1 respawns while expedition is still active -> HandleCharacterAdded must spawn P1 in Eliminated Recovery Bay (Z >= 35), NOT active station!
-p1Humanoid.Health = 100
-p1.CharacterAdded:Fire(p1.Character)
-assert(RoundService:GetPlayerStatus(p1) == "ELIMINATED", "Respawning eliminated player must remain ELIMINATED")
-assert(p1.Character.HumanoidRootPart.Position.Z >= 35, "Eliminated player must spawn in Hub Recovery Bay (Z >= 35)")
-
--- Eliminated player attempting to sprint is rejected by MovementService
-local okElimSprint, elimSprintReason = MovementService:HandleSprintRequest(p1, true)
-assert(okElimSprint == false and elimSprintReason == "EliminatedCannotSprint", "Eliminated player cannot sprint")
-print("[LUAU VM PASS] Issue 01: State-aware respawning & elimination isolation verified.")
-
--- ----------------------------------------------------------------------------
--- TEST 4 (Issue 04): Physical Extraction Zone Proximity & Left-Behind Validation
--- ----------------------------------------------------------------------------
+-- Transition into EXTRACTION while all 6 players remain at their initial station spawn positions:
+-- Verify that NO player is automatically extracted!
 RoundService:_enterExtractionPhase()
 assert(RoundService:GetState() == "EXTRACTION", "RoundService must be in EXTRACTION")
 
--- P3 is far from the extraction zone (at Z = 25) and tries to extract -> Must be rejected!
-p3.Character:PivotTo(CFrame.new(0, 3, 25))
-local okFarExtract, farExtractReason = RoundService:TryExtractPlayer(p3)
-assert(okFarExtract == false and farExtractReason == "OutOfExtractionZone", "Far player cannot extract outside physical zone")
-assert(RoundService:GetPlayerStatus(p3) == "IN_EXPEDITION", "P3 must still be IN_EXPEDITION")
+for _, player in ipairs(allSixPlayers) do
+	local okAutoExtract, autoExtractReason = RoundService:TryExtractPlayer(player)
+	assert(
+		okAutoExtract == false and autoExtractReason == "OutOfExtractionZone",
+		player.Name .. " at initial station entry spawn must NOT be extractable without walking to the extraction zone"
+	)
+	assert(RoundService:GetPlayerStatus(player) == "IN_EXPEDITION", player.Name .. " must remain IN_EXPEDITION")
+end
+print("[LUAU VM PASS] Fix 1: All 6 station spawn positions verified outside extraction zone; zero auto-extractions.")
 
+-- ----------------------------------------------------------------------------
+-- TEST 4 (Fix 2 & Issue 01): Elimination & Fresh-Character Respawn Flow
+-- (No in-place Humanoid.Health restoration or dead-character pivoting in Humanoid.Died)
+-- ----------------------------------------------------------------------------
+local deadCharacterRef = p1.Character
+local deadHumanoidRef = deadCharacterRef:FindFirstChildOfClass("Humanoid")
+local posAtDeath = deadCharacterRef.HumanoidRootPart.Position
+
+-- P1 takes fatal damage -> Humanoid.Died fires
+-- Note: Our mock Humanoid & Character throw a Lua error if any code inside Humanoid.Died
+-- tries to set Health > 0 on deadHumanoidRef or call deadCharacterRef:PivotTo(...)!
+deadHumanoidRef.Health = 0
+deadHumanoidRef.Died:Fire()
+
+assert(RoundService:GetPlayerStatus(p1) == "ELIMINATED", "Humanoid.Died must mark P1 ELIMINATED")
+assert(deadHumanoidRef.Health == 0, "Dead Humanoid health must remain 0 (never restored in-place)")
+assert(
+	(deadCharacterRef.HumanoidRootPart.Position - posAtDeath).Magnitude < 0.001,
+	"Dead character must NOT be pivoted during Humanoid.Died"
+)
+
+-- Now simulate Roblox spawning a brand-new Character model via p1:LoadCharacter()
+local freshCharacterRef = p1:LoadCharacter()
+local freshHumanoidRef = freshCharacterRef:FindFirstChildOfClass("Humanoid")
+
+assert(freshCharacterRef ~= deadCharacterRef, "Respawn must create a fresh Character instance")
+assert(freshHumanoidRef ~= deadHumanoidRef, "Respawn must create a fresh Humanoid instance")
+assert(freshHumanoidRef.Health == GameConfig.DEFAULT_MAX_HEALTH, "Fresh character must have full health")
+assert(RoundService:GetPlayerStatus(p1) == "ELIMINATED", "Respawning eliminated player must remain ELIMINATED")
+assert(
+	freshCharacterRef.HumanoidRootPart.Position.Z >= 35,
+	"Fresh character for ELIMINATED player must be spawned in Hub Recovery Bay (Z >= 35)"
+)
+
+-- Verify that a living IN_EXPEDITION player (p3) who gets a fresh character via LoadCharacter()
+-- is spawned at their Station 001 entry spawn (Z >= 18), strictly outside the extraction zone
+local p3FreshChar = p3:LoadCharacter()
+assert(RoundService:GetPlayerStatus(p3) == "IN_EXPEDITION", "P3 must still be IN_EXPEDITION")
+assert(p3FreshChar.HumanoidRootPart.Position.Z >= 18, "Living expedition player respawn must route to Station 001 entry spawn (Z >= 18)")
+assert(HubService:IsPlayerInExtractionZone(p3) == false, "Respawned expedition player must be outside extraction zone")
+print("[LUAU VM PASS] Fix 2 & Issue 01: Dead characters are never healed/pivoted in-place; fresh-character respawn flow verified.")
+
+-- ----------------------------------------------------------------------------
+-- TEST 5 (Issue 04): Physical Extraction Zone Proximity & Left-Behind Validation
+-- ----------------------------------------------------------------------------
 -- P4 moves inside the physical ExtractionPlatformZone (15, 2.5, -8) and extracts -> Must succeed!
+MovementService:NotifyServerTeleport(p4, GameConfig.EXTRACTION_ZONE_POSITION)
 p4.Character:PivotTo(CFrame.new(GameConfig.EXTRACTION_ZONE_POSITION))
 local okNearExtract, nearExtractReason = RoundService:TryExtractPlayer(p4)
 assert(okNearExtract == true and nearExtractReason == "Extracted", "Player inside physical extraction zone must extract")
 assert(RoundService:GetPlayerStatus(p4) == "EXTRACTED", "P4 status must be EXTRACTED")
 
 -- Departure deadline hits (_enterReturnPhase):
--- P4 (EXTRACTED) survives; P3 (still at Z = 25 outside extraction zone) is marked ELIMINATED (left behind)!
+-- P4 (EXTRACTED) survives; P3, P5, P6, P7 (still at station entry spawns outside extraction zone) are marked ELIMINATED!
 RoundService:_enterReturnPhase()
 assert(RoundService:GetPlayerStatus(p4) == "EXTRACTED", "P4 must remain EXTRACTED")
-assert(RoundService:GetPlayerStatus(p3) == "ELIMINATED", "P3 who failed to reach extraction zone must be marked ELIMINATED")
+assert(RoundService:GetPlayerStatus(p3) == "ELIMINATED", "P3 who stayed at station spawn must be marked ELIMINATED")
 assert(RoundService:GetLastOutcome() == "SUCCESS", "Round outcome must be SUCCESS because P4 extracted")
+print("[LUAU VM PASS] Issue 04: Physical extraction zone proximity & left-behind elimination verified.")
+
+-- ----------------------------------------------------------------------------
+-- TEST 6 (Fix 4): All-Crew-Eliminated Immediate Round Termination
+-- (Round terminates immediately without waiting for the 180s EXPLORATION timer)
+-- ----------------------------------------------------------------------------
+-- Disconnect extra players p5, p6, p7 so we have a clean 2-player crew (p1, p4)
+for _, extraP in ipairs({ p5, p6, p7, p3 }) do
+	extraP.Parent = nil
+	Players.PlayerRemoving:Fire(extraP)
+end
+
+RoundService:CleanupRound()
+RoundService:_startNewIntermission()
+RoundService:_enterBoardingPhase()
+RoundService:_lockCrewAndDepart()
+RoundService:_enterExplorationPhase()
+
+assert(RoundService:GetState() == "EXPLORATION", "New round must be in EXPLORATION")
+assert(RoundService:GetPlayerStatus(p1) == "IN_EXPEDITION", "P1 must be IN_EXPEDITION")
+assert(RoundService:GetPlayerStatus(p4) == "IN_EXPEDITION", "P4 must be IN_EXPEDITION")
+
+local clockBeforeWipe = os.clock()
+
+-- Eliminate P1 -> P4 is still alive so round continues in EXPLORATION
+p1.Character:FindFirstChildOfClass("Humanoid").Health = 0
+p1.Character:FindFirstChildOfClass("Humanoid").Died:Fire()
+assert(RoundService:GetState() == "EXPLORATION", "Round must remain in EXPLORATION while P4 is still alive")
+
+-- Eliminate P4 (last surviving expedition crew member) -> Round must IMMEDIATELY enter RETURN with FAILED outcome!
+p4.Character:FindFirstChildOfClass("Humanoid").Health = 0
+p4.Character:FindFirstChildOfClass("Humanoid").Died:Fire()
+
+local clockAfterWipe = os.clock()
+assert(
+	clockAfterWipe == clockBeforeWipe,
+	"All-crew-eliminated termination must happen immediately (0s elapsed) without waiting for the 180s phase timer"
+)
+assert(RoundService:GetState() == "RETURN", "RoundService must immediately transition to RETURN when all crew are eliminated")
+assert(RoundService:GetLastOutcome() == "FAILED", "Round outcome must be FAILED when all crew are eliminated")
+
+-- Also verify _waitPhaseOrAbort(180, true, "EXPLORATION") returns false immediately when state already changed
+local completedFullTimer = RoundService:_waitPhaseOrAbort(180, true, "EXPLORATION")
+assert(completedFullTimer == false, "_waitPhaseOrAbort must immediately abort and return false when phase was terminated early")
+print("[LUAU VM PASS] Fix 4: All-crew-eliminated immediate round termination verified.")
 print("ALL_LUAU_VM_TESTS_PASSED")
 `;
 
@@ -710,13 +924,20 @@ export function runRojoAndStaticToolchainChecks(): {
   rojoVersion: string;
   rojoBuildOk: boolean;
   rbxlSizeBytes: number;
+  luauAnalyzeOk: boolean;
   luauLspOutput: string;
   styluaOk: boolean;
   seleneOk: boolean;
   seleneOutput: string;
 } {
-  const { luauLspBin, rojoBin, seleneBin, styluaBin, globalTypesPath } =
-    ensureToolchainInstalled();
+  const {
+    luauAnalyzeBin,
+    luauLspBin,
+    rojoBin,
+    seleneBin,
+    styluaBin,
+    globalTypesPath,
+  } = ensureToolchainInstalled();
 
   const rojoVersion = execFileSync(rojoBin, ['--version'], {
     cwd: ROOT_DIR,
@@ -738,6 +959,17 @@ export function runRojoAndStaticToolchainChecks(): {
 
   const rbxlStats = fs.statSync(rbxlPath);
 
+  // Verify official Luau CLI static analyzer binary works on pure Luau modules
+  const luauAnalyzeOutput = execFileSync(
+    luauAnalyzeBin,
+    ['roblox/ReplicatedStorage/Shared/Types/NetworkTypes.lua'],
+    {
+      cwd: ROOT_DIR,
+      encoding: 'utf8',
+    }
+  ).trim();
+
+  // Run full Rojo-sourcemap-aware strict Luau typechecking with Roblox globalTypes.d.luau
   const luauLspOutput = execFileSync(
     luauLspBin,
     [
@@ -758,26 +990,39 @@ export function runRojoAndStaticToolchainChecks(): {
     encoding: 'utf8',
   });
 
-  if (!fs.existsSync(path.join(ROOT_DIR, 'roblox.yml'))) {
+  // Run selene using TOOLS_DIR as working directory so roblox.yml stays inside TOOLS_DIR
+  // and never pollutes the git repository root.
+  const toolsRobloxYml = path.join(TOOLS_DIR, 'roblox.yml');
+  if (!fs.existsSync(toolsRobloxYml)) {
     execFileSync(seleneBin, ['generate-roblox-std'], {
-      cwd: ROOT_DIR,
+      cwd: TOOLS_DIR,
       encoding: 'utf8',
     });
   }
+  const toolsSeleneToml = path.join(TOOLS_DIR, 'selene.toml');
+  fs.writeFileSync(
+    toolsSeleneToml,
+    fs.readFileSync(path.join(ROOT_DIR, 'selene.toml'), 'utf8'),
+    'utf8'
+  );
 
-  const seleneOutput = execFileSync(seleneBin, ['roblox'], {
-    cwd: ROOT_DIR,
-    encoding: 'utf8',
-  }).trim();
+  const seleneOutput = execFileSync(
+    seleneBin,
+    ['--config', toolsSeleneToml, path.join(ROOT_DIR, 'roblox')],
+    {
+      cwd: TOOLS_DIR,
+      encoding: 'utf8',
+    }
+  ).trim();
 
   return {
     rojoVersion,
     rojoBuildOk: rbxlStats.size > 0,
     rbxlSizeBytes: rbxlStats.size,
+    luauAnalyzeOk: luauAnalyzeOutput === '',
     luauLspOutput,
     styluaOk: true,
     seleneOk: true,
     seleneOutput,
   };
 }
-

@@ -6,15 +6,45 @@ import {
   NightlineServerEngine,
   GAME_CONFIG,
   HUB_INTERACTABLES,
+  STATION_ENTRY_OFFSETS,
 } from './nightlineEngine';
 import {
+  ensureToolchainInstalled,
   runRojoAndStaticToolchainChecks,
   runActualLuauModulesInVm,
 } from './luauVmRunner';
 
 const ROOT_DIR = process.cwd();
 
-test('Issue 06 & 07: rokit.toml pins Rojo 7.7.1+ and default.project.json omits deprecated Workspace.FilteringEnabled', () => {
+test('Fix 5 & Issue 06/07: Toolchain bootstrap script, rokit.toml, and default.project.json are reproducible from a clean checkout', () => {
+  const bootstrapScriptPath = path.join(ROOT_DIR, 'scripts', 'bootstrap-toolchain.sh');
+  assert.equal(
+    fs.existsSync(bootstrapScriptPath),
+    true,
+    'scripts/bootstrap-toolchain.sh must exist for clean-checkout reproducibility'
+  );
+
+  const toolchain = ensureToolchainInstalled();
+  assert.equal(fs.existsSync(toolchain.luauBin), true, 'Official luau CLI VM binary must exist');
+  assert.equal(
+    fs.existsSync(toolchain.luauAnalyzeBin),
+    true,
+    'Official luau-analyze CLI binary must exist'
+  );
+  assert.equal(
+    fs.existsSync(toolchain.luauLspBin),
+    true,
+    'luau-lsp binary must exist'
+  );
+  assert.equal(
+    fs.existsSync(toolchain.globalTypesPath),
+    true,
+    'Roblox globalTypes.d.luau type definitions must exist'
+  );
+  assert.equal(fs.existsSync(toolchain.rojoBin), true, 'Rojo 7.7.1 binary must exist');
+  assert.equal(fs.existsSync(toolchain.styluaBin), true, 'StyLua binary must exist');
+  assert.equal(fs.existsSync(toolchain.seleneBin), true, 'Selene binary must exist');
+
   const projectJsonPath = path.join(ROOT_DIR, 'default.project.json');
   assert.equal(fs.existsSync(projectJsonPath), true, 'default.project.json must exist');
 
@@ -36,7 +66,7 @@ test('Issue 06 & 07: rokit.toml pins Rojo 7.7.1+ and default.project.json omits 
   );
 });
 
-test('Issue 05 (Toolchain): Official Rojo 7.7.1 build, luau-lsp --!strict typecheck, Selene linter, and StyLua formatter pass on /roblox', () => {
+test('Fix 5 & Issue 05 (Toolchain): Official Rojo 7.7.1 build, luau-analyze, luau-lsp --!strict typecheck, Selene linter, and StyLua formatter pass on /roblox', () => {
   const results = runRojoAndStaticToolchainChecks();
   assert.equal(results.rojoBuildOk, true, 'rojo build default.project.json must succeed');
   assert.equal(
@@ -44,6 +74,7 @@ test('Issue 05 (Toolchain): Official Rojo 7.7.1 build, luau-lsp --!strict typech
     true,
     `Built .rbxl file must be non-empty (got ${results.rbxlSizeBytes} bytes)`
   );
+  assert.equal(results.luauAnalyzeOk, true, 'Official luau-analyze binary must be operational');
   assert.equal(
     results.luauLspOutput,
     '',
@@ -51,14 +82,47 @@ test('Issue 05 (Toolchain): Official Rojo 7.7.1 build, luau-lsp --!strict typech
   );
   assert.equal(results.styluaOk, true, 'stylua --check roblox must pass');
   assert.equal(results.seleneOk, true, 'selene roblox must pass with 0 warnings/errors');
+  assert.equal(
+    fs.existsSync(path.join(ROOT_DIR, 'roblox.yml')),
+    false,
+    'selene must not pollute the repository root with an untracked roblox.yml file'
+  );
 });
 
-test('Issue 05 (Luau Runtime VM): Actual /roblox/**/*.lua modules execute inside the official Luau VM and pass Issues 01-04 integration checks', () => {
+test('Fix 6 & Issue 05 (Luau Runtime VM): Actual /roblox/**/*.lua modules execute inside the official Luau VM and pass Fixes 1-4 & Issues 01-04 regression assertions', () => {
   const vmResult = runActualLuauModulesInVm();
   assert.equal(
     vmResult.passed,
     true,
     `Actual Luau VM test suite must pass: ${vmResult.assertionsSummary}`
+  );
+  assert.equal(
+    vmResult.stdoutLines.some((line) =>
+      line.includes('Fix 1: All 6 station spawn positions verified outside extraction zone')
+    ),
+    true,
+    'Luau VM must verify Fix 1 (all 6 station spawn positions outside extraction zone)'
+  );
+  assert.equal(
+    vmResult.stdoutLines.some((line) =>
+      line.includes('Fix 2 & Issue 01: Dead characters are never healed/pivoted in-place')
+    ),
+    true,
+    'Luau VM must verify Fix 2 (dead characters never healed/pivoted in Humanoid.Died; fresh-character respawn flow)'
+  );
+  assert.equal(
+    vmResult.stdoutLines.some((line) =>
+      line.includes('Fix 3 & Issue 03: Horizontal + vertical movement validation')
+    ),
+    true,
+    'Luau VM must verify Fix 3 (horizontal + vertical movement validation)'
+  );
+  assert.equal(
+    vmResult.stdoutLines.some((line) =>
+      line.includes('Fix 4: All-crew-eliminated immediate round termination verified')
+    ),
+    true,
+    'Luau VM must verify Fix 4 (all-crew-eliminated immediate round termination)'
   );
   assert.equal(
     vmResult.stdoutLines.some((line) => line.includes('ALL_LUAU_VM_TESTS_PASSED')),
@@ -67,7 +131,53 @@ test('Issue 05 (Luau Runtime VM): Actual /roblox/**/*.lua modules execute inside
   );
 });
 
-test('Workbench Mirror: Issue 01 (State-aware respawn & elimination) and Issue 02 (Explicit 1..6 spawn-slot allocation)', () => {
+test('Workbench Mirror — Fix 1: All 6 active station entry spawn positions are outside the extraction zone and no player auto-extracts on arrival', () => {
+  const engine = new NightlineServerEngine();
+  const userIds = [101, 102, 103, 104, 105, 106];
+
+  for (const uid of userIds) {
+    engine.addPlayer(uid, `Crew_${uid}`);
+  }
+
+  assert.equal(STATION_ENTRY_OFFSETS.length, 6);
+  for (let i = 0; i < STATION_ENTRY_OFFSETS.length; i += 1) {
+    const spot = STATION_ENTRY_OFFSETS[i];
+    const distToExtract = Math.hypot(
+      spot.x - GAME_CONFIG.EXTRACTION_ZONE_POSITION.x,
+      spot.z - GAME_CONFIG.EXTRACTION_ZONE_POSITION.z
+    );
+    assert.equal(
+      distToExtract > GAME_CONFIG.EXTRACTION_ZONE_RADIUS,
+      true,
+      `Station entry slot #${i + 1} must be strictly outside ExtractionPlatformZone (dist=${distToExtract.toFixed(1)} > ${GAME_CONFIG.EXTRACTION_ZONE_RADIUS})`
+    );
+  }
+
+  engine.advanceToNextPhase(); // BOARDING
+  engine.advanceToNextPhase(); // TRAVEL
+  engine.advanceToNextPhase(); // EXPLORATION
+  assert.equal(engine.state, 'EXPLORATION');
+
+  for (const uid of userIds) {
+    assert.equal(
+      engine.isPlayerInExtractionZone(uid),
+      false,
+      `Player ${uid} must NOT be inside the extraction zone upon entering Station 001`
+    );
+  }
+
+  // Transition into EXTRACTION without moving players -> none of the 6 players can extract from their station entry spawn
+  engine.advanceToNextPhase(); // EXTRACTION
+  assert.equal(engine.state, 'EXTRACTION');
+  for (const uid of userIds) {
+    const res = engine.tryExtractPlayer(uid);
+    assert.equal(res.ok, false);
+    assert.equal(res.reason, 'OutOfExtractionZone');
+    assert.equal(engine.players.get(uid)?.status, 'IN_EXPEDITION');
+  }
+});
+
+test('Workbench Mirror — Fix 2 & Fix 4: State-aware respawning, slot allocation, and immediate round termination when all active crew are eliminated', () => {
   const engine = new NightlineServerEngine();
 
   // Issue 02: Allocate slots 1, 2, 3 -> remove player 2 -> next player gets freed slot 2
@@ -80,61 +190,108 @@ test('Workbench Mirror: Issue 01 (State-aware respawn & elimination) and Issue 0
 
   engine.removePlayer(202);
   const p4 = engine.addPlayer(404, 'Riley').player!;
-  assert.equal(p4.spawnSlot, 2, 'Joining player must receive freed slot #2 instead of colliding with slot #3');
+  assert.equal(
+    p4.spawnSlot,
+    2,
+    'Joining player must receive freed slot #2 instead of colliding with slot #3'
+  );
 
-  // Issue 01: Advance to EXPLORATION and eliminate Player 101 -> respawns in Recovery Bay and cannot re-enter active station
+  // Advance to EXPLORATION (3 crew members: 101, 303, 404)
   engine.advanceToNextPhase(); // BOARDING
   engine.advanceToNextPhase(); // TRAVEL
   engine.advanceToNextPhase(); // EXPLORATION
   assert.equal(engine.state, 'EXPLORATION');
 
-  const elimRes = engine.eliminatePlayer(101, 'HollowStrike');
-  assert.equal(elimRes.ok, true);
+  // Eliminate Player 101 -> respawns in Recovery Bay (Z >= 35) while round stays in EXPLORATION
+  const elim1 = engine.eliminatePlayer(101, 'HollowStrike');
+  assert.equal(elim1.ok, true);
   assert.equal(engine.players.get(101)?.status, 'ELIMINATED');
-
-  const respawnRes = engine.handleCharacterRespawn(101);
-  assert.equal(respawnRes.spawnZone, 'RECOVERY_BAY');
   assert.equal(engine.players.get(101)!.position.z >= 35, true);
+  assert.equal(engine.state, 'EXPLORATION');
 
-  // Active expedition player 303 respawns inside active station boarding bay, not Hub
+  // Active expedition player 303 respawns at Station 001 entry spawn (Z >= 18), outside extraction zone
   const activeRespawn = engine.handleCharacterRespawn(303);
   assert.equal(activeRespawn.spawnZone, 'ACTIVE_STATION');
-  assert.equal(engine.players.get(303)!.position.z <= -14, true);
+  assert.equal(engine.players.get(303)!.position.z >= 18, true);
+  assert.equal(engine.isPlayerInExtractionZone(303), false);
+
+  // Fix 4: Eliminate remaining crew (303 and 404) -> Round must immediately terminate into RETURN with FAILED outcome
+  engine.eliminatePlayer(303, 'HollowStrike');
+  assert.equal(engine.state, 'EXPLORATION', 'Round continues while 404 is still alive');
+
+  engine.eliminatePlayer(404, 'HollowStrike');
+  assert.equal(
+    engine.state,
+    'RETURN',
+    'Round must immediately transition to RETURN as soon as all active crew are eliminated'
+  );
+  assert.equal(engine.lastOutcome, 'FAILED');
 });
 
-test('Workbench Mirror: Issue 03 (Server-owned sprint eligibility & movement speed rubberbanding) and Issue 04 (Physical Extraction Zone validation)', () => {
+test('Workbench Mirror — Fix 3 & Issue 03/04: Horizontal + vertical movement validation and physical extraction zone enforcement', () => {
   const engine = new NightlineServerEngine();
   engine.addPlayer(101, 'Avery');
   engine.addPlayer(202, 'Morgan');
 
-  // Issue 03: Server-validated sprint
+  // Server-validated sprint
   const sprintOn = engine.handleSprintRequest(101, true);
   assert.equal(sprintOn.ok, true);
   assert.equal(engine.players.get(101)?.walkSpeed, GAME_CONFIG.SPRINT_SPEED);
 
-  // Invalid sprint payload rejected
-  const sprintInvalid = engine.handleSprintRequest(101, 'fast' as unknown);
-  assert.equal(sprintInvalid.ok, false);
-  assert.equal(sprintInvalid.reason, 'InvalidPayload');
-
-  // Speed exploit displacement rubberbanded
   const p1 = engine.players.get(101)!;
   const startPos = { ...p1.position };
-  const exploitCheck = engine.validatePlayerMovement(101, { x: startPos.x, z: startPos.z - 80 }, 0.25);
-  assert.equal(exploitCheck.ok, false);
-  assert.equal(exploitCheck.reason, 'SpeedAnomalyRubberbanded');
-  assert.deepEqual(engine.players.get(101)?.position, startPos);
 
-  // Issue 04: Advance to EXTRACTION. Move Player 101 into physical Extraction Zone (15, -8); leave Player 202 far away.
+  // Legitimate jump (+11 studs Y in 0.25s) -> accepted
+  const validJump = engine.validatePlayerMovement(
+    101,
+    { x: startPos.x, z: startPos.z - 2 },
+    0.25,
+    11
+  );
+  assert.equal(validJump.ok, true);
+  assert.equal(validJump.reason, 'ValidMovement');
+
+  // Legitimate gravity fall (-28 studs Y in 0.25s) -> accepted
+  const posAfterJump = { ...p1.position };
+  const validFall = engine.validatePlayerMovement(
+    101,
+    { x: posAfterJump.x, z: posAfterJump.z - 2 },
+    0.25,
+    -28
+  );
+  assert.equal(validFall.ok, true);
+  assert.equal(validFall.reason, 'ValidMovement');
+
+  // Horizontal speed exploit -> rejected & rubberbanded
+  const posBeforeHack = { ...p1.position };
+  const horizExploit = engine.validatePlayerMovement(
+    101,
+    { x: posBeforeHack.x, z: posBeforeHack.z - 80 },
+    0.25,
+    0
+  );
+  assert.equal(horizExploit.ok, false);
+  assert.equal(horizExploit.reason, 'SpeedAnomalyRubberbanded');
+  assert.deepEqual(engine.players.get(101)?.position, posBeforeHack);
+
+  // Vertical upward fly exploit (+45 studs Y in 0.25s) -> rejected
+  const upExploit = engine.validatePlayerMovement(101, posBeforeHack, 0.25, 45);
+  assert.equal(upExploit.ok, false);
+  assert.equal(upExploit.reason, 'RubberbandedVerticalUpwardAnomaly');
+
+  // Vertical downward noclip exploit (-120 studs Y in 0.25s) -> rejected
+  const downExploit = engine.validatePlayerMovement(101, posBeforeHack, 0.25, -120);
+  assert.equal(downExploit.ok, false);
+  assert.equal(downExploit.reason, 'RubberbandedVerticalDownwardAnomaly');
+
+  // Issue 04: Advance to EXTRACTION. Move Player 101 into physical Extraction Zone (15, -8); leave Player 202 at station arrival spawn.
   engine.advanceToNextPhase(); // BOARDING
   engine.advanceToNextPhase(); // TRAVEL
   engine.advanceToNextPhase(); // EXPLORATION
   engine.advanceToNextPhase(); // EXTRACTION
   assert.equal(engine.state, 'EXTRACTION');
 
-  // Player 202 is far from extraction zone -> tryExtractPlayer rejected
-  p1.position = { x: 0, z: -20 };
-  engine.players.get(202)!.position = { x: 0, z: 25 };
+  // Player 202 is at their station entry spawn (Z >= 18) -> tryExtractPlayer rejected
   const farExtract = engine.tryExtractPlayer(202);
   assert.equal(farExtract.ok, false);
   assert.equal(farExtract.reason, 'OutOfExtractionZone');

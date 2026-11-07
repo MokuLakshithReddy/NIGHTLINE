@@ -4,8 +4,10 @@
 	Constructs and maintains the navigable Train Hub inside Workspace.World.Hub (Milestone 1).
 	Responsibilities:
 	- Explicit 1..6 Spawn-Slot Allocation and release on player departure (Issue 02).
-	- State-aware player spawning: Hub Spawns, Boarding Bay, Active Station Entry, and Eliminated Recovery Bay (Issue 01).
-	- Physical Extraction Platform Zone construction and server-side proximity/bounds validation (Issue 04).
+	- State-aware player spawning for living/fresh characters: Hub Spawns, Boarding Bay,
+	  Active Station Concourse Entry Spawns (strictly outside Extraction Zone), and Eliminated Recovery Bay.
+	- Never heals or pivots a dead Humanoid; dead characters must respawn as fresh character models (Remediation #2).
+	- Physical Extraction Platform Zone construction and 3D proximity/bounds validation (Remediation #1 & Issue 04).
 ]]
 
 local CollectionService = game:GetService("CollectionService")
@@ -24,6 +26,7 @@ local HubService: { [string]: any } = {
 	_activeStationFolder = nil :: Folder?,
 	_spawnParts = {} :: { BasePart },
 	_boardingSpawnParts = {} :: { BasePart },
+	_stationEntrySpawnParts = {} :: { BasePart },
 	_eliminatedSpawnParts = {} :: { BasePart },
 	_extractionZonePart = nil :: BasePart?,
 	_allocatedSlots = {} :: { [number]: number }, -- slotIndex (1..6) -> userId
@@ -167,6 +170,7 @@ function HubService:_buildTrainHubGeometry()
 	spawns:ClearAllChildren()
 	table.clear(self._spawnParts)
 	table.clear(self._boardingSpawnParts)
+	table.clear(self._stationEntrySpawnParts)
 	table.clear(self._eliminatedSpawnParts)
 	self._extractionZonePart = nil
 
@@ -365,7 +369,23 @@ function HubService:_buildTrainHubGeometry()
 		table.insert(self._boardingSpawnParts, marker)
 	end
 
-	-- 6. Eliminated Recovery Berths in Rear Hub Bay (Issue 01: State-aware respawn for eliminated players)
+	-- 6. Six Station 001 Concourse Entry Spawns (Remediation #1: Z = 18..30, strictly outside Extraction Zone at Z = -8)
+	for index, offset in ipairs(GameConfig.STATION_ENTRY_SPAWNS) do
+		local entryPad = createPart({
+			name = string.format("StationEntrySpawn_%02d", index),
+			size = Vector3.new(3, 0.2, 3),
+			cframe = CFrame.new(offset),
+			color = Color3.fromRGB(56, 189, 248),
+			material = Enum.Material.SmoothPlastic,
+			transparency = 0.5,
+			canCollide = false,
+			parent = train,
+		})
+		CollectionService:AddTag(entryPad, GameConfig.Tags.StationEntrySpawn)
+		table.insert(self._stationEntrySpawnParts, entryPad)
+	end
+
+	-- 7. Eliminated Recovery Berths in Rear Hub Bay (Issue 01 & Remediation #2: Fresh respawn for eliminated players)
 	local eliminatedOffsets = {
 		Vector3.new(-7, 2.5, 36),
 		Vector3.new(-3, 2.5, 36),
@@ -389,7 +409,7 @@ function HubService:_buildTrainHubGeometry()
 		table.insert(self._eliminatedSpawnParts, berth)
 	end
 
-	-- 7. Physical Extraction Platform Zone adjacent to Boarding Gate (Issue 04)
+	-- 8. Physical Extraction Platform Zone adjacent to Boarding Gate (Issue 04 & Remediation #1)
 	local extractionZone = createPart({
 		name = "ExtractionPlatformZone",
 		size = GameConfig.EXTRACTION_ZONE_SIZE,
@@ -416,57 +436,66 @@ function HubService:_buildTrainHubGeometry()
 	self._extractionZonePart = extractionZone
 end
 
-function HubService:_pivotPlayerSafely(player: Player, targetCFrame: CFrame, resetHealth: boolean)
+-- Remediation #2: Never restore Humanoid.Health or attempt to revive/pivot a dead character.
+-- Only living characters (including fresh characters spawned via LoadCharacter / CharacterAdded) are pivoted.
+function HubService:_pivotLivingCharacter(player: Player, targetCFrame: CFrame): boolean
 	local character = player.Character
-	if not character then
-		return
+	if not character or not character.Parent then
+		return false
 	end
 	local rootPart = character:FindFirstChild("HumanoidRootPart")
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
-	if humanoid then
+	if not humanoid or humanoid.Health <= 0 then
+		return false
+	end
+	if not rootPart or not rootPart:IsA("BasePart") then
+		return false
+	end
+
+	if self._movementService then
+		self._movementService:ResetPlayerState(player)
+		self._movementService:NotifyServerTeleport(player, targetCFrame.Position)
+	else
 		humanoid.WalkSpeed = GameConfig.WALK_SPEED
-		if resetHealth then
-			humanoid.MaxHealth = GameConfig.DEFAULT_MAX_HEALTH
-			humanoid.Health = GameConfig.DEFAULT_MAX_HEALTH
-		end
 	end
-	if rootPart and rootPart:IsA("BasePart") then
-		if self._movementService then
-			self._movementService:NotifyServerTeleport(player, targetCFrame.Position)
-		end
-		character:PivotTo(targetCFrame)
-	end
+
+	character:PivotTo(targetCFrame)
+	return true
 end
 
-function HubService:SpawnPlayerInHub(player: Player, slotIndex: number?)
+function HubService:SpawnPlayerInHub(player: Player, slotIndex: number?): boolean
 	local spawnCount = #self._spawnParts
 	if spawnCount == 0 then
-		return
+		return false
 	end
 	local resolvedSlot = slotIndex or self:GetPlayerSpawnSlot(player.UserId)
 	local chosenIndex = ((resolvedSlot - 1) % spawnCount) + 1
 	local spawnPad = self._spawnParts[chosenIndex]
-	self:_pivotPlayerSafely(player, spawnPad.CFrame + Vector3.new(0, 3, 0), true)
+	return self:_pivotLivingCharacter(player, spawnPad.CFrame + Vector3.new(0, 3, 0))
 end
 
--- Issue 01: Eliminated players respawn into the Hub Recovery Bay and cannot re-enter the active station
-function HubService:SpawnEliminatedPlayerInHub(player: Player, slotIndex: number?)
+-- Remediation #2: Eliminated players respawn as a fresh character into the Hub Recovery Bay
+function HubService:SpawnEliminatedPlayerInHub(player: Player, slotIndex: number?): boolean
 	local count = #self._eliminatedSpawnParts
 	if count == 0 then
-		self:SpawnPlayerInHub(player, slotIndex)
-		return
+		return self:SpawnPlayerInHub(player, slotIndex)
 	end
 	local resolvedSlot = slotIndex or self:GetPlayerSpawnSlot(player.UserId)
 	local berth = self._eliminatedSpawnParts[((resolvedSlot - 1) % count) + 1]
-	self:_pivotPlayerSafely(player, berth.CFrame + Vector3.new(0, 3, 0), true)
+	return self:_pivotLivingCharacter(player, berth.CFrame + Vector3.new(0, 3, 0))
 end
 
--- Issue 01: Active expedition players spawning/arriving at Station 001 platform
-function HubService:SpawnPlayerInActiveStation(player: Player, slotIndex: number?)
+-- Remediation #1: All 6 active station spawns are located at Z = 18..30, outside the Extraction Zone (Z = -8, r = 12)
+function HubService:GetActiveStationSpawnPosition(slotIndex: number): Vector3
+	local spawns = GameConfig.STATION_ENTRY_SPAWNS
+	local chosenIndex = ((slotIndex - 1) % #spawns) + 1
+	return spawns[chosenIndex]
+end
+
+function HubService:SpawnPlayerInActiveStation(player: Player, slotIndex: number?): boolean
 	local resolvedSlot = slotIndex or self:GetPlayerSpawnSlot(player.UserId)
-	local zOffset = -16 + ((resolvedSlot - 1) * 3)
-	local targetCFrame = CFrame.new(Vector3.new(15, 3, zOffset))
-	self:_pivotPlayerSafely(player, targetCFrame, false)
+	local targetPos = self:GetActiveStationSpawnPosition(resolvedSlot)
+	return self:_pivotLivingCharacter(player, CFrame.new(targetPos))
 end
 
 function HubService:MoveCrewToBoardingBay(players: { Player })
@@ -477,7 +506,7 @@ function HubService:MoveCrewToBoardingBay(players: { Player })
 	for _, player in ipairs(players) do
 		local slotIndex = self:GetPlayerSpawnSlot(player.UserId)
 		local marker = self._boardingSpawnParts[((slotIndex - 1) % count) + 1]
-		self:_pivotPlayerSafely(player, marker.CFrame + Vector3.new(0, 3, 0), false)
+		self:_pivotLivingCharacter(player, marker.CFrame + Vector3.new(0, 3, 0))
 	end
 end
 
@@ -488,9 +517,22 @@ function HubService:ReturnAllPlayersToHub(players: { Player })
 	end
 end
 
--- Issue 04: Physical Extraction Zone validation on the server
+-- Issue 04 & Remediation #1: Physical Extraction Zone validation on the server
 function HubService:GetExtractionZonePart(): BasePart?
 	return self._extractionZonePart
+end
+
+function HubService:IsPositionInExtractionZone(position: Vector3): boolean
+	local zoneCenter = if self._extractionZonePart
+		then self._extractionZonePart.Position
+		else GameConfig.EXTRACTION_ZONE_POSITION
+
+	local horizontalDist =
+		Vector3.new(position.X - zoneCenter.X, 0, position.Z - zoneCenter.Z).Magnitude
+	local verticalDist = math.abs(position.Y - zoneCenter.Y)
+
+	return horizontalDist <= GameConfig.EXTRACTION_ZONE_RADIUS
+		and verticalDist <= GameConfig.EXTRACTION_VERTICAL_HALF_HEIGHT
 end
 
 function HubService:IsPlayerInExtractionZone(player: Player): boolean
@@ -504,17 +546,7 @@ function HubService:IsPlayerInExtractionZone(player: Player): boolean
 		return false
 	end
 
-	local zoneCenter = if self._extractionZonePart
-		then self._extractionZonePart.Position
-		else GameConfig.EXTRACTION_ZONE_POSITION
-
-	local horizontalDist = Vector3.new(
-		rootPart.Position.X - zoneCenter.X,
-		0,
-		rootPart.Position.Z - zoneCenter.Z
-	).Magnitude
-
-	return horizontalDist <= GameConfig.EXTRACTION_ZONE_RADIUS
+	return self:IsPositionInExtractionZone(rootPart.Position)
 end
 
 function HubService:ClearRuntimeStation()

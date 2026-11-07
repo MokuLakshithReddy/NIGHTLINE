@@ -3,6 +3,8 @@ import luauRcRaw from '../../.luaurc?raw';
 import seleneTomlRaw from '../../selene.toml?raw';
 import styluaTomlRaw from '../../stylua.toml?raw';
 import rokitTomlRaw from '../../rokit.toml?raw';
+import bootstrapToolchainShRaw from '../../scripts/bootstrap-toolchain.sh?raw';
+import githubCiYmlRaw from '../../.github/workflows/ci.yml?raw';
 
 import networkTypesLua from '../../roblox/ReplicatedStorage/Shared/Types/NetworkTypes.lua?raw';
 import gameConfigLua from '../../roblox/ReplicatedStorage/Shared/Config/GameConfig.lua?raw';
@@ -42,6 +44,20 @@ export interface ProjectSourceFile {
 }
 
 export const PROJECT_SOURCE_FILES: ProjectSourceFile[] = [
+  {
+    path: '.github/workflows/ci.yml',
+    robloxInstancePath: 'GitHub Actions CI Pipeline',
+    category: 'Rojo & Toolchain',
+    summary: 'Automated CI workflow running bootstrap-toolchain.sh, StyLua, Selene, Luau-LSP, Rojo build, and Luau VM tests.',
+    content: githubCiYmlRaw,
+  },
+  {
+    path: 'scripts/bootstrap-toolchain.sh',
+    robloxInstancePath: 'Clean-Checkout Toolchain Installer',
+    category: 'Rojo & Toolchain',
+    summary: 'Installs official luau (0.746), luau-analyze, luau-lsp (1.70.1), globalTypes.d.luau, rojo (7.7.1), stylua, and selene.',
+    content: bootstrapToolchainShRaw,
+  },
   {
     path: 'default.project.json',
     robloxInstancePath: 'DataModel (Rojo Root)',
