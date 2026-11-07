@@ -137,9 +137,9 @@ export const GAME_CONFIG = {
   SPRINT_COOLDOWN_SECONDS: 0.1,
   DEFAULT_MAX_HEALTH: 100,
   MAX_INTERACTION_DISTANCE: 14.0,
-  EXTRACTION_ZONE_POSITION: { x: 15, z: -8 } as Vec2,
-  EXTRACTION_ZONE_SIZE: { w: 8, d: 18 },
-  EXTRACTION_ZONE_RADIUS: 12.0,
+  EXTRACTION_ZONE_POSITION: { x: 16, z: -8 } as Vec2,
+  EXTRACTION_ZONE_SIZE: { w: 10, d: 16 },
+  EXTRACTION_ZONE_RADIUS: 10.0,
   PROMPT_COOLDOWN_SECONDS: 0.5,
   EQUIPMENT_COOLDOWN_SECONDS: 0.25,
   REMOTE_RATE_LIMIT_WINDOW: 1.0,
@@ -203,14 +203,14 @@ export const BOARDING_BAY_OFFSETS: Vec2[] = [
   { x: 4, z: -14 },
 ];
 
-// Fix 1: Station 001 arrival spawn slots strictly outside ExtractionPlatformZone (x=15, z=-8, r=12)
+// Priority 2 & Fix 1: Station 001 arrival spawn slots on solid StationPlatformFloor (x=15..21, z=18..30)
 export const STATION_ENTRY_OFFSETS: Vec2[] = [
-  { x: 14, z: 18 },
-  { x: 18, z: 18 },
-  { x: 14, z: 24 },
-  { x: 18, z: 24 },
-  { x: 14, z: 30 },
-  { x: 18, z: 30 },
+  { x: 15, z: 18 },
+  { x: 21, z: 18 },
+  { x: 15, z: 24 },
+  { x: 21, z: 24 },
+  { x: 15, z: 30 },
+  { x: 21, z: 30 },
 ];
 
 export const HUB_INTERACTABLES: HubInteractable[] = [
@@ -252,17 +252,17 @@ export const HUB_INTERACTABLES: HubInteractable[] = [
     objectText: 'Expedition Boarding Hatch',
     actionText: 'Toggle Boarding Ready',
     tag: 'NightlineBoardingZone',
-    position: { x: 8.8, z: -8 },
-    size: { w: 2.0, d: 8 },
+    position: { x: 9.2, z: -14 },
+    size: { w: 1.5, d: 3 },
   },
   {
     id: 'ExtractionPlatformZone',
     name: 'ExtractionPlatformZone',
-    objectText: 'Train Extraction Boarding Zone',
-    actionText: 'Board Train for Extraction',
+    objectText: 'Station 001 Extraction Platform',
+    actionText: 'Extract to Train',
     tag: 'NightlineExtractionZone',
-    position: { x: 15, z: -8 },
-    size: { w: 8, d: 18 },
+    position: { x: 16, z: -8 },
+    size: { w: 10, d: 16 },
   },
 ];
 
@@ -811,7 +811,7 @@ export class NightlineServerEngine {
         const nextX = player.position.x + player.velocity.x * speed * moveStep;
         const nextZ = player.position.z + player.velocity.z * speed * moveStep;
         const maxX =
-          this.state === 'EXPLORATION' || this.state === 'EXTRACTION' ? 18.0 : 8.8;
+          this.state === 'EXPLORATION' || this.state === 'EXTRACTION' ? 28.0 : 8.8;
         player.position.x = Math.max(-8.8, Math.min(maxX, nextX));
         player.position.z = Math.max(-38.5, Math.min(38.5, nextZ));
         player.facingAngle = Math.atan2(player.velocity.x, -player.velocity.z);

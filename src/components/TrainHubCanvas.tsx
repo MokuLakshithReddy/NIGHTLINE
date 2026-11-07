@@ -273,8 +273,8 @@ export const TrainHubCanvas: React.FC<TrainHubCanvasProps> = ({
       // Station 001 Boarding Platform on the bottom side (Positive X in world = lower on screen)
       const isAtStation =
         engine.state === 'EXPLORATION' || engine.state === 'EXTRACTION';
-      const platformTopLeft = worldToScreen(11.5, 42);
-      const platformBottomRight = worldToScreen(20.5, -42);
+      const platformTopLeft = worldToScreen(11.0, 42);
+      const platformBottomRight = worldToScreen(24.0, -42);
       ctx.fillStyle = isAtStation ? '#1e293b' : '#111827';
       ctx.fillRect(
         platformTopLeft.sx,
@@ -291,15 +291,26 @@ export const TrainHubCanvas: React.FC<TrainHubCanvasProps> = ({
         platformBottomRight.sy - platformTopLeft.sy
       );
 
+      // Train-to-Station Zero-Gap Threshold Bridge (X = 9..13, Z = -42..+42)
+      const bridgeTL = worldToScreen(9.8, 42);
+      const bridgeBR = worldToScreen(12.2, -42);
+      ctx.fillStyle = isAtStation ? 'rgba(16, 185, 129, 0.16)' : 'rgba(51, 65, 85, 0.25)';
+      ctx.fillRect(
+        bridgeTL.sx,
+        bridgeTL.sy,
+        bridgeBR.sx - bridgeTL.sx,
+        bridgeBR.sy - bridgeTL.sy
+      );
+
       ctx.fillStyle = isAtStation ? '#34d399' : '#64748b';
-      ctx.font = `600 ${Math.max(10, Math.floor(scale * 1.1))}px "JetBrains Mono", monospace`;
+      ctx.font = `600 ${Math.max(10, Math.floor(scale * 1.05))}px "JetBrains Mono", monospace`;
       ctx.textAlign = 'center';
       ctx.fillText(
         isAtStation
-          ? 'STATION 001: THE FORGOTTEN TERMINAL · PHYSICAL EXTRACTION ZONE ACTIVE'
-          : 'HUB PLATFORM BAY · BOARDING & EXTRACTION ZONE ALIGNED',
+          ? 'STATION 001: THE FORGOTTEN TERMINAL · SOLID PLATFORM & CONCOURSE ACTIVE'
+          : 'STATION 001 PLATFORM BAY · BULKHEAD DOORS SEALED IN TRANSIT',
         centerX,
-        platformTopLeft.sy + 6.5 * scale
+        platformBottomRight.sy - 1.2 * scale
       );
 
       // Train Carriage Outer Hull (Z from -42 to +42, X from -11 to +11)
@@ -363,6 +374,17 @@ export const TrainHubCanvas: React.FC<TrainHubCanvasProps> = ({
       ctx.strokeStyle = '#475569';
       ctx.lineWidth = 3;
       ctx.strokeRect(hullTL.sx, hullTL.sy, hullW, hullH);
+
+      // Train-to-Station Bulkhead Doorways on Right Wall (X = 10.5, Z = -12..-4 and Z = 20..28)
+      [
+        { zStart: 28, zEnd: 20, label: 'ARRIVAL HATCH' },
+        { zStart: -4, zEnd: -12, label: 'EXTRACTION HATCH' },
+      ].forEach((hatch) => {
+        const d1 = worldToScreen(10.2, hatch.zStart);
+        const d2 = worldToScreen(11.8, hatch.zEnd);
+        ctx.fillStyle = isAtStation ? 'rgba(16, 185, 129, 0.45)' : '#f59e0b';
+        ctx.fillRect(d1.sx, d1.sy, d2.sx - d1.sx, d2.sy - d1.sy);
+      });
 
       // Zone Labels inside Train Hub
       ctx.fillStyle = 'rgba(148, 163, 184, 0.55)';

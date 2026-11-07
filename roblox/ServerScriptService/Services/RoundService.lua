@@ -41,6 +41,8 @@ local RoundService: { [string]: any } = {
 	_lastOutcome = "PENDING" :: NetworkTypes.RoundOutcome,
 	_selectedStationId = GameConfig.DEFAULT_STATION_ID :: NetworkTypes.StationId,
 	_selectedMissionId = "RestorePower" :: NetworkTypes.MissionTemplateId,
+	_objectiveProgress = 0,
+	_objectiveCompleted = false,
 	_roster = {} :: { [number]: PlayerRosterEntry },
 	_activeExpeditionUserIds = {} :: { [number]: boolean },
 	_roundJanitor = Janitor.new(),
@@ -72,6 +74,8 @@ function RoundService:Init(dependencies: {
 	self._lastOutcome = "PENDING"
 	self._selectedStationId = GameConfig.DEFAULT_STATION_ID
 	self._selectedMissionId = ObjectiveConfig.OrderedTemplateIds[1]
+	self._objectiveProgress = 0
+	self._objectiveCompleted = false
 	table.clear(self._roster)
 	table.clear(self._activeExpeditionUserIds)
 end
@@ -486,6 +490,85 @@ function RoundService:HandleDestinationVote(player: Player, stationId: any): (bo
 	return true, "VoteRecorded"
 end
 
+function RoundService:HandleStationObjectiveInteraction(
+	player: Player,
+	objectivePart: BasePart
+): (boolean, string)
+	local security = self._securityService
+	if not security:ValidatePlayerInstance(player) then
+		return false, "InvalidPlayer"
+	end
+
+	if self._state ~= "EXPLORATION" and self._state ~= "EXTRACTION" then
+		return false, "InvalidPhase"
+	end
+
+	local entry = self._roster[player.UserId]
+	if not entry or not self._activeExpeditionUserIds[player.UserId] then
+		return false, "NotInActiveExpedition"
+	end
+
+	if entry.status ~= "IN_EXPEDITION" then
+		return false, "PlayerNotInExpedition"
+	end
+
+	local _, _, humanoid = security:GetValidatedCharacterRoot(player)
+	if not humanoid or humanoid.Health <= 0 then
+		return false, "PlayerNotAlive"
+	end
+
+	if objectivePart:GetAttribute("Completed") == true then
+		return false, "ObjectiveNodeAlreadyUsed"
+	end
+
+	objectivePart:SetAttribute("Completed", true)
+	local prompt = objectivePart:FindFirstChildOfClass("ProximityPrompt")
+	if prompt then
+		prompt.Enabled = false
+	end
+
+	local template = ObjectiveConfig.Templates[self._selectedMissionId]
+	local requiredProgress = if template then template.requiredProgress else 3
+
+	self._objectiveProgress = math.min(requiredProgress, self._objectiveProgress + 1)
+	if self._objectiveProgress >= requiredProgress then
+		self._objectiveCompleted = true
+	end
+
+	self:_broadcastObjectivePreview()
+
+	if self._objectiveCompleted then
+		self:BroadcastNotification(
+			"PrimaryObjectiveCompleted",
+			string.format(
+				"Primary objective completed (%d/%d)! Proceed to the Station 001 Extraction Platform.",
+				self._objectiveProgress,
+				requiredProgress
+			),
+			"Success"
+		)
+	else
+		self:BroadcastNotification(
+			"ObjectiveProgressUpdated",
+			string.format(
+				"%s progressed the station objective (%d/%d).",
+				player.DisplayName,
+				self._objectiveProgress,
+				requiredProgress
+			),
+			"Info"
+		)
+	end
+
+	return true, if self._objectiveCompleted then "ObjectiveCompleted" else "ObjectiveProgressed"
+end
+
+function RoundService:GetObjectiveProgress(): (number, number, boolean)
+	local template = ObjectiveConfig.Templates[self._selectedMissionId]
+	local requiredProgress = if template then template.requiredProgress else 3
+	return self._objectiveProgress, requiredProgress, self._objectiveCompleted
+end
+
 function RoundService:_isExpeditionPhase(state: NetworkTypes.RoundState): boolean
 	return state == "TRAVEL"
 		or state == "EXPLORATION"
@@ -736,6 +819,7 @@ function RoundService:_lockCrewAndDepart()
 	end
 
 	if self._hubService then
+		self._hubService:SetStationDoorsOpen(false)
 		self._hubService:MoveCrewToBoardingBay(departingPlayers)
 	end
 
@@ -749,8 +833,14 @@ function RoundService:_lockCrewAndDepart()
 end
 
 function RoundService:_enterExplorationPhase()
-	-- Remediation #1: Move active expedition crew onto Station 001 concourse entry spawns (Z = 18..30, outside extraction zone)
+	self._objectiveProgress = 0
+	self._objectiveCompleted = false
+
+	-- Priority 2 & Remediation #1: Build physical Station 001 environment, open train-to-station bulkhead doors,
+	-- and spawn active expedition crew onto solid StationEntrySpawn pads (Z = 18..30, outside extraction zone).
 	if self._hubService then
+		self._hubService:BuildStation001Environment()
+		self._hubService:SetStationDoorsOpen(true)
 		for userId in pairs(self._activeExpeditionUserIds) do
 			local entry = self._roster[userId]
 			if entry and entry.player.Parent == Players and entry.status == "IN_EXPEDITION" then
@@ -769,6 +859,9 @@ function RoundService:_enterExplorationPhase()
 end
 
 function RoundService:_enterExtractionPhase()
+	if self._hubService then
+		self._hubService:SetStationDoorsOpen(true)
+	end
 	self:_transitionTo("EXTRACTION", GameConfig.RoundDurations.EXTRACTION)
 	self:BroadcastNotification(
 		"ExtractionWarning",
@@ -781,6 +874,10 @@ end
 function RoundService:_enterReturnPhase()
 	if self._state == "RETURN" then
 		return
+	end
+
+	if self._hubService then
+		self._hubService:SetStationDoorsOpen(false)
 	end
 
 	local extractedCount = 0
@@ -951,9 +1048,9 @@ function RoundService:_broadcastObjectivePreview()
 	local payload: NetworkTypes.ObjectivePayload = {
 		objectiveId = template.id,
 		title = template.title,
-		progress = 0,
+		progress = self._objectiveProgress,
 		requiredProgress = template.requiredProgress,
-		isComplete = false,
+		isComplete = self._objectiveCompleted,
 	}
 	remotes.ObjectiveUpdated:FireAllClients(payload)
 end

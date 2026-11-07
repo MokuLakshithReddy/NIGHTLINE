@@ -29,8 +29,9 @@ jobs:
         with:
           node-version: '22'
           cache: 'npm'
+          cache-dependency-path: 'package-lock.json'
 
-      - name: Install npm dependencies
+      - name: Install npm dependencies from clean lockfile
         run: npm ci
 
       - name: Bootstrap Luau, Rojo, StyLua, Selene & Roblox Global Types
@@ -41,8 +42,9 @@ jobs:
 
       - name: Lint Luau Source (Selene)
         run: |
+          REPO_ROOT="${GITHUB_WORKSPACE:-$PWD}"
           cp selene.toml /tmp/roblox-tools/selene.toml
-          (cd /tmp/roblox-tools && /tmp/roblox-tools/selene --config /tmp/roblox-tools/selene.toml "${GITHUB_WORKSPACE}/roblox")
+          (cd /tmp/roblox-tools && /tmp/roblox-tools/selene --config /tmp/roblox-tools/selene.toml "${REPO_ROOT}/roblox")
 
       - name: Generate Rojo Sourcemap & Build Place File (.rbxl)
         run: |

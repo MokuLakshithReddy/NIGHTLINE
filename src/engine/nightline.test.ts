@@ -16,7 +16,34 @@ import {
 
 const ROOT_DIR = process.cwd();
 
-test('Fix 5 & Issue 06/07: Toolchain bootstrap script, rokit.toml, and default.project.json are reproducible from a clean checkout', () => {
+test('Priority 1 & Fix 5: package-lock.json, CI workflow npm cache config, and toolchain bootstrap script are valid for clean-checkout npm ci', () => {
+  const packageLockPath = path.join(ROOT_DIR, 'package-lock.json');
+  assert.equal(
+    fs.existsSync(packageLockPath),
+    true,
+    'package-lock.json must exist at repository root for npm ci and actions/setup-node caching'
+  );
+  const lockData = JSON.parse(fs.readFileSync(packageLockPath, 'utf8'));
+  assert.equal(
+    typeof lockData.lockfileVersion === 'number' && lockData.lockfileVersion >= 3,
+    true,
+    'package-lock.json must be a valid npm v3+ lockfile'
+  );
+
+  const ciYmlPath = path.join(ROOT_DIR, '.github', 'workflows', 'ci.yml');
+  assert.equal(fs.existsSync(ciYmlPath), true, '.github/workflows/ci.yml must exist');
+  const ciYmlContent = fs.readFileSync(ciYmlPath, 'utf8');
+  assert.equal(
+    ciYmlContent.includes("cache-dependency-path: 'package-lock.json'"),
+    true,
+    'ci.yml must configure cache-dependency-path: package-lock.json for actions/setup-node'
+  );
+  assert.equal(
+    ciYmlContent.includes('run: npm ci'),
+    true,
+    'ci.yml must run npm ci'
+  );
+
   const bootstrapScriptPath = path.join(ROOT_DIR, 'scripts', 'bootstrap-toolchain.sh');
   assert.equal(
     fs.existsSync(bootstrapScriptPath),
@@ -89,12 +116,19 @@ test('Fix 5 & Issue 05 (Toolchain): Official Rojo 7.7.1 build, luau-analyze, lua
   );
 });
 
-test('Fix 6 & Issue 05 (Luau Runtime VM): Actual /roblox/**/*.lua modules execute inside the official Luau VM and pass Fixes 1-4 & Issues 01-04 regression assertions', () => {
+test('Priorities 2, 3 & 4 (Luau Runtime VM): Actual /roblox/**/*.lua modules verify Station 001 physical geometry, CanCollide=true spawns, and 10-stage round lifecycle', () => {
   const vmResult = runActualLuauModulesInVm();
   assert.equal(
     vmResult.passed,
     true,
     `Actual Luau VM test suite must pass: ${vmResult.assertionsSummary}`
+  );
+  assert.equal(
+    vmResult.stdoutLines.some((line) =>
+      line.includes('Priority 2 & Fix 1: Physically playable Station 001 environment, CanCollide=true spawns, and collision walls verified')
+    ),
+    true,
+    'Luau VM must verify Priority 2 (Station 001 physical floors, CanCollide=true spawns, and collision boundaries)'
   );
   assert.equal(
     vmResult.stdoutLines.some((line) =>
@@ -123,6 +157,13 @@ test('Fix 6 & Issue 05 (Luau Runtime VM): Actual /roblox/**/*.lua modules execut
     ),
     true,
     'Luau VM must verify Fix 4 (all-crew-eliminated immediate round termination)'
+  );
+  assert.equal(
+    vmResult.stdoutLines.some((line) =>
+      line.includes('Priority 3: Complete 10-stage round lifecycle verified end-to-end')
+    ),
+    true,
+    'Luau VM must verify Priority 3 (complete 10-stage round lifecycle)'
   );
   assert.equal(
     vmResult.stdoutLines.some((line) => line.includes('ALL_LUAU_VM_TESTS_PASSED')),
@@ -284,7 +325,7 @@ test('Workbench Mirror — Fix 3 & Issue 03/04: Horizontal + vertical movement v
   assert.equal(downExploit.ok, false);
   assert.equal(downExploit.reason, 'RubberbandedVerticalDownwardAnomaly');
 
-  // Issue 04: Advance to EXTRACTION. Move Player 101 into physical Extraction Zone (15, -8); leave Player 202 at station arrival spawn.
+  // Issue 04: Advance to EXTRACTION. Move Player 101 into physical Extraction Zone (16, -8); leave Player 202 at station arrival spawn.
   engine.advanceToNextPhase(); // BOARDING
   engine.advanceToNextPhase(); // TRAVEL
   engine.advanceToNextPhase(); // EXPLORATION

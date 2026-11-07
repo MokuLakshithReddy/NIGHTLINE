@@ -1,13 +1,20 @@
 --!strict
 --[[
 	HubService.lua
-	Constructs and maintains the navigable Train Hub inside Workspace.World.Hub (Milestone 1).
+	Constructs and maintains the navigable Train Hub inside Workspace.World.Hub
+	and the physically playable Station 001 environment inside Workspace.World.Runtime.ActiveStation.
 	Responsibilities:
 	- Explicit 1..6 Spawn-Slot Allocation and release on player departure (Issue 02).
 	- State-aware player spawning for living/fresh characters: Hub Spawns, Boarding Bay,
-	  Active Station Concourse Entry Spawns (strictly outside Extraction Zone), and Eliminated Recovery Bay.
+	  Station 001 Arrival Spawns (strictly outside Extraction Zone), and Eliminated Recovery Bay.
 	- Never heals or pivots a dead Humanoid; dead characters must respawn as fresh character models (Remediation #2).
-	- Physical Extraction Platform Zone construction and 3D proximity/bounds validation (Remediation #1 & Issue 04).
+	- Physically playable Station 001 environment (Priority 2):
+	  - Solid CanCollide=true StationPlatformFloor, TrainToStationBridge (0-stud gap), MainConcourseFloor,
+	    MaintenanceRoomFloor, ControlRoomFloor, and CargoStorageFloor.
+	  - Segmented Train right wall with openable bulkhead doors connecting the train interior to the station platform.
+	  - Six solid CanCollide=true StationEntrySpawn pads supported by StationPlatformFloor, strictly outside the extraction zone.
+	  - Accessible ExtractionPlatformDeck & ExtractionPlatformZone (16, 3, -8) with ProximityPrompt.
+	  - Full perimeter collision walls and verifiable gap-free walkable navigation paths.
 ]]
 
 local CollectionService = game:GetService("CollectionService")
@@ -24,11 +31,17 @@ local HubService: { [string]: any } = {
 	_spawnsFolder = nil :: Folder?,
 	_runtimeFolder = nil :: Folder?,
 	_activeStationFolder = nil :: Folder?,
+	_stationModel = nil :: Model?,
 	_spawnParts = {} :: { BasePart },
 	_boardingSpawnParts = {} :: { BasePart },
 	_stationEntrySpawnParts = {} :: { BasePart },
 	_eliminatedSpawnParts = {} :: { BasePart },
+	_stationObjectiveParts = {} :: { BasePart },
+	_trainDoorParts = {} :: { BasePart },
+	_collidableFloorParts = {} :: { BasePart },
+	_collidableWallParts = {} :: { BasePart },
 	_extractionZonePart = nil :: BasePart?,
+	_stationDoorsOpen = false,
 	_allocatedSlots = {} :: { [number]: number }, -- slotIndex (1..6) -> userId
 	_playerSlots = {} :: { [number]: number }, -- userId -> slotIndex (1..6)
 	_movementService = nil :: any,
@@ -64,6 +77,8 @@ function HubService:Init()
 	table.clear(self._playerSlots)
 	self:_ensureWorkspaceHierarchy()
 	self:_buildTrainHubGeometry()
+	self:BuildStation001Environment()
+	self:SetStationDoorsOpen(false)
 end
 
 function HubService:SetMovementService(movementService: any)
@@ -71,7 +86,7 @@ function HubService:SetMovementService(movementService: any)
 end
 
 function HubService:Start()
-	-- Hub geometry is ready before players join
+	-- Hub & Station 001 physical geometry are ready before players join
 end
 
 -- Issue 02: Explicit Spawn-Slot Allocation System
@@ -89,7 +104,6 @@ function HubService:AllocateSpawnSlot(userId: number): number
 		end
 	end
 
-	-- Fallback if server exceeds nominal capacity
 	local fallbackSlot = ((userId - 1) % GameConfig.MAX_PLAYERS_PER_SERVER) + 1
 	self._playerSlots[userId] = fallbackSlot
 	return fallbackSlot
@@ -161,6 +175,14 @@ function HubService:_ensureWorkspaceHierarchy()
 	self._activeStationFolder = activeStation
 end
 
+function HubService:_registerFloorPart(part: BasePart)
+	table.insert(self._collidableFloorParts, part)
+end
+
+function HubService:_registerWallPart(part: BasePart)
+	table.insert(self._collidableWallParts, part)
+end
+
 function HubService:_buildTrainHubGeometry()
 	local train = self._trainModel
 	local spawns = self._spawnsFolder
@@ -170,20 +192,23 @@ function HubService:_buildTrainHubGeometry()
 	spawns:ClearAllChildren()
 	table.clear(self._spawnParts)
 	table.clear(self._boardingSpawnParts)
-	table.clear(self._stationEntrySpawnParts)
 	table.clear(self._eliminatedSpawnParts)
-	self._extractionZonePart = nil
+	table.clear(self._trainDoorParts)
+	table.clear(self._collidableFloorParts)
+	table.clear(self._collidableWallParts)
 
-	-- Train Hub Floor (84 studs long along Z, 22 studs wide along X)
+	-- Train Hub Floor (84 studs long along Z: -42..+42, 22 studs wide along X: -11..+11)
 	local floor = createPart({
 		name = "TrainFloor",
 		size = Vector3.new(22, 1.5, 84),
 		cframe = CFrame.new(0, 0, 0),
 		color = Color3.fromRGB(30, 35, 44),
 		material = Enum.Material.DiamondPlate,
+		canCollide = true,
 		parent = train,
 	})
 	train.PrimaryPart = floor
+	self:_registerFloorPart(floor)
 
 	createPart({
 		name = "TrainRoof",
@@ -191,42 +216,123 @@ function HubService:_buildTrainHubGeometry()
 		cframe = CFrame.new(0, 13, 0),
 		color = Color3.fromRGB(22, 26, 34),
 		material = Enum.Material.Metal,
+		canCollide = true,
 		parent = train,
 	})
 
-	createPart({
+	local wallLeft = createPart({
 		name = "WallLeft",
 		size = Vector3.new(1, 12, 84),
 		cframe = CFrame.new(-10.5, 6.5, 0),
 		color = Color3.fromRGB(42, 49, 60),
 		material = Enum.Material.Metal,
+		canCollide = true,
+		parent = train,
+	})
+	self:_registerWallPart(wallLeft)
+
+	-- Segmented Right Wall (X = 10.5) with two 8-stud-wide station doorways:
+	-- Doorway 1 (Boarding & Extraction Hatch): Z = -12 .. -4 (centered at Z = -8)
+	-- Doorway 2 (Station Arrival Hatch): Z = 20 .. 28 (centered at Z = 24)
+	local wallRightFront = createPart({
+		name = "WallRight_Front",
+		size = Vector3.new(1, 12, 30),
+		cframe = CFrame.new(10.5, 6.5, -27),
+		color = Color3.fromRGB(42, 49, 60),
+		material = Enum.Material.Metal,
+		canCollide = true,
+		parent = train,
+	})
+	self:_registerWallPart(wallRightFront)
+
+	local wallRightCenter = createPart({
+		name = "WallRight_Center",
+		size = Vector3.new(1, 12, 24),
+		cframe = CFrame.new(10.5, 6.5, 8),
+		color = Color3.fromRGB(42, 49, 60),
+		material = Enum.Material.Metal,
+		canCollide = true,
+		parent = train,
+	})
+	self:_registerWallPart(wallRightCenter)
+
+	local wallRightRear = createPart({
+		name = "WallRight_Rear",
+		size = Vector3.new(1, 12, 14),
+		cframe = CFrame.new(10.5, 6.5, 35),
+		color = Color3.fromRGB(42, 49, 60),
+		material = Enum.Material.Metal,
+		canCollide = true,
+		parent = train,
+	})
+	self:_registerWallPart(wallRightRear)
+
+	-- Doorway lintels above the 9-stud-tall openings
+	createPart({
+		name = "WallRight_Lintel_Extraction",
+		size = Vector3.new(1, 2.75, 8),
+		cframe = CFrame.new(10.5, 11.125, -8),
+		color = Color3.fromRGB(35, 40, 50),
+		material = Enum.Material.Metal,
+		canCollide = true,
 		parent = train,
 	})
 	createPart({
-		name = "WallRight",
-		size = Vector3.new(1, 12, 84),
-		cframe = CFrame.new(10.5, 6.5, 0),
-		color = Color3.fromRGB(42, 49, 60),
+		name = "WallRight_Lintel_Arrival",
+		size = Vector3.new(1, 2.75, 8),
+		cframe = CFrame.new(10.5, 11.125, 24),
+		color = Color3.fromRGB(35, 40, 50),
 		material = Enum.Material.Metal,
+		canCollide = true,
 		parent = train,
 	})
 
-	createPart({
+	-- Sliding Bulkhead Doors (closed during Hub/Travel/Return; open during Station Exploration/Extraction)
+	local extractionDoor = createPart({
+		name = "Door_ExtractionHatch",
+		size = Vector3.new(0.8, 9, 8),
+		cframe = CFrame.new(10.5, 5.25, -8),
+		color = Color3.fromRGB(196, 130, 42),
+		material = Enum.Material.Metal,
+		transparency = 0.15,
+		canCollide = true,
+		parent = train,
+	})
+	table.insert(self._trainDoorParts, extractionDoor)
+
+	local arrivalDoor = createPart({
+		name = "Door_ArrivalHatch",
+		size = Vector3.new(0.8, 9, 8),
+		cframe = CFrame.new(10.5, 5.25, 24),
+		color = Color3.fromRGB(56, 189, 248),
+		material = Enum.Material.Metal,
+		transparency = 0.15,
+		canCollide = true,
+		parent = train,
+	})
+	table.insert(self._trainDoorParts, arrivalDoor)
+
+	local bulkheadFront = createPart({
 		name = "BulkheadFront",
 		size = Vector3.new(22, 12, 1),
 		cframe = CFrame.new(0, 6.5, -41.5),
 		color = Color3.fromRGB(35, 40, 50),
 		material = Enum.Material.Metal,
+		canCollide = true,
 		parent = train,
 	})
-	createPart({
+	self:_registerWallPart(bulkheadFront)
+
+	local bulkheadRear = createPart({
 		name = "BulkheadRear",
 		size = Vector3.new(22, 12, 1),
 		cframe = CFrame.new(0, 6.5, 41.5),
 		color = Color3.fromRGB(35, 40, 50),
 		material = Enum.Material.Metal,
+		canCollide = true,
 		parent = train,
 	})
+	self:_registerWallPart(bulkheadRear)
 
 	for zOffset = -30, 30, 20 do
 		local lightFixture = createPart({
@@ -252,6 +358,7 @@ function HubService:_buildTrainHubGeometry()
 		cframe = CFrame.new(0, 3, -34),
 		color = Color3.fromRGB(28, 64, 92),
 		material = Enum.Material.Metal,
+		canCollide = true,
 		parent = train,
 	})
 	CollectionService:AddTag(destinationConsole, GameConfig.Tags.DestinationTerminal)
@@ -280,6 +387,7 @@ function HubService:_buildTrainHubGeometry()
 			cframe = CFrame.new(-8.8, 3.8, lockerInfo.z),
 			color = Color3.fromRGB(68, 82, 98),
 			material = Enum.Material.Metal,
+			canCollide = true,
 			parent = train,
 		})
 		CollectionService:AddTag(lockerPart, GameConfig.Tags.EquipmentLocker)
@@ -298,13 +406,14 @@ function HubService:_buildTrainHubGeometry()
 		lockerPrompt.Parent = lockerPart
 	end
 
-	-- 3. Boarding Ready Bay & Gate (Right Side Platform Doorway, Z = -8)
+	-- 3. Boarding Ready Stanchion Console beside the Z = -8 Doorway (at Z = -14 so doorway is clear)
 	local boardingGate = createPart({
 		name = "BoardingReadyGate",
-		size = Vector3.new(1.5, 8, 8),
-		cframe = CFrame.new(9.2, 4.8, -8),
+		size = Vector3.new(1.2, 6, 2.5),
+		cframe = CFrame.new(9.2, 3.8, -14),
 		color = Color3.fromRGB(196, 130, 42),
 		material = Enum.Material.Metal,
+		canCollide = true,
 		parent = train,
 	})
 	CollectionService:AddTag(boardingGate, GameConfig.Tags.BoardingZone)
@@ -320,20 +429,20 @@ function HubService:_buildTrainHubGeometry()
 	boardingPrompt.RequiresLineOfSight = false
 	boardingPrompt.Parent = boardingGate
 
-	-- 4. Six Player Hub Spawns (Z = 12 to 32)
+	-- 4. Six Player Hub Spawns (Z = 12 to 32, resting on TrainFloor with CanCollide=true)
 	local spawnOffsets = {
-		Vector3.new(-5, 2.5, 12),
-		Vector3.new(5, 2.5, 12),
-		Vector3.new(-5, 2.5, 22),
-		Vector3.new(5, 2.5, 22),
-		Vector3.new(-5, 2.5, 32),
-		Vector3.new(5, 2.5, 32),
+		Vector3.new(-5, 0.85, 12),
+		Vector3.new(5, 0.85, 12),
+		Vector3.new(-5, 0.85, 22),
+		Vector3.new(5, 0.85, 22),
+		Vector3.new(-5, 0.85, 32),
+		Vector3.new(5, 0.85, 32),
 	}
 
 	for index, offset in ipairs(spawnOffsets) do
 		local spawnLocation = Instance.new("SpawnLocation")
 		spawnLocation.Name = string.format("HubSpawn_%02d", index)
-		spawnLocation.Size = Vector3.new(4, 0.5, 4)
+		spawnLocation.Size = Vector3.new(4, 0.2, 4)
 		spawnLocation.CFrame = CFrame.new(offset) * CFrame.Angles(0, math.pi, 0)
 		spawnLocation.Anchored = true
 		spawnLocation.CanCollide = true
@@ -344,16 +453,17 @@ function HubService:_buildTrainHubGeometry()
 		spawnLocation.Parent = spawns
 		CollectionService:AddTag(spawnLocation, GameConfig.Tags.HubSpawn)
 		table.insert(self._spawnParts, spawnLocation)
+		self:_registerFloorPart(spawnLocation)
 	end
 
-	-- 5. Six Forward Boarding Bay Positions (Z = -24 to -14)
+	-- 5. Six Forward Boarding Bay Pads (Z = -24 to -14, flush CanCollide=true pads on TrainFloor)
 	local boardingOffsets = {
-		Vector3.new(-4, 2.5, -24),
-		Vector3.new(4, 2.5, -24),
-		Vector3.new(-4, 2.5, -19),
-		Vector3.new(4, 2.5, -19),
-		Vector3.new(-4, 2.5, -14),
-		Vector3.new(4, 2.5, -14),
+		Vector3.new(-4, 0.85, -24),
+		Vector3.new(4, 0.85, -24),
+		Vector3.new(-4, 0.85, -19),
+		Vector3.new(4, 0.85, -19),
+		Vector3.new(-4, 0.85, -14),
+		Vector3.new(4, 0.85, -14),
 	}
 	for index, offset in ipairs(boardingOffsets) do
 		local marker = createPart({
@@ -362,37 +472,22 @@ function HubService:_buildTrainHubGeometry()
 			cframe = CFrame.new(offset),
 			color = Color3.fromRGB(245, 158, 11),
 			material = Enum.Material.Neon,
-			transparency = 0.6,
-			canCollide = false,
+			transparency = 0.4,
+			canCollide = true,
 			parent = train,
 		})
 		table.insert(self._boardingSpawnParts, marker)
+		self:_registerFloorPart(marker)
 	end
 
-	-- 6. Six Station 001 Concourse Entry Spawns (Remediation #1: Z = 18..30, strictly outside Extraction Zone at Z = -8)
-	for index, offset in ipairs(GameConfig.STATION_ENTRY_SPAWNS) do
-		local entryPad = createPart({
-			name = string.format("StationEntrySpawn_%02d", index),
-			size = Vector3.new(3, 0.2, 3),
-			cframe = CFrame.new(offset),
-			color = Color3.fromRGB(56, 189, 248),
-			material = Enum.Material.SmoothPlastic,
-			transparency = 0.5,
-			canCollide = false,
-			parent = train,
-		})
-		CollectionService:AddTag(entryPad, GameConfig.Tags.StationEntrySpawn)
-		table.insert(self._stationEntrySpawnParts, entryPad)
-	end
-
-	-- 7. Eliminated Recovery Berths in Rear Hub Bay (Issue 01 & Remediation #2: Fresh respawn for eliminated players)
+	-- 6. Eliminated Recovery Berths in Rear Hub Bay (Issue 01 & Remediation #2: CanCollide=true pads on TrainFloor)
 	local eliminatedOffsets = {
-		Vector3.new(-7, 2.5, 36),
-		Vector3.new(-3, 2.5, 36),
-		Vector3.new(0, 2.5, 36),
-		Vector3.new(3, 2.5, 36),
-		Vector3.new(7, 2.5, 36),
-		Vector3.new(0, 2.5, 38),
+		Vector3.new(-7, 0.85, 36),
+		Vector3.new(-3, 0.85, 36),
+		Vector3.new(0, 0.85, 36),
+		Vector3.new(3, 0.85, 36),
+		Vector3.new(7, 0.85, 36),
+		Vector3.new(0, 0.85, 38),
 	}
 	for index, offset in ipairs(eliminatedOffsets) do
 		local berth = createPart({
@@ -401,24 +496,177 @@ function HubService:_buildTrainHubGeometry()
 			cframe = CFrame.new(offset),
 			color = Color3.fromRGB(244, 63, 94),
 			material = Enum.Material.SmoothPlastic,
-			transparency = 0.5,
-			canCollide = false,
+			transparency = 0.35,
+			canCollide = true,
 			parent = train,
 		})
 		CollectionService:AddTag(berth, GameConfig.Tags.EliminatedSpawn)
 		table.insert(self._eliminatedSpawnParts, berth)
+		self:_registerFloorPart(berth)
+	end
+end
+
+--[[
+	Priority 2: Builds the complete, physically playable Station 001 environment inside
+	Workspace.World.Runtime.ActiveStation:
+	- TrainToStationBridge (X = 9..13, Z = -42..+42): Zero-gap bridge connecting TrainFloor to StationPlatformFloor.
+	- StationPlatformFloor (X = 11..29, Z = -42..+42): Solid CanCollide=true platform supporting all 6 StationEntrySpawns
+	  and the ExtractionPlatformDeck/ExtractionPlatformZone.
+	- MainConcourseFloor (X = 29..65, Z = -42..+42): Solid CanCollide=true concourse connected seamlessly to the platform.
+	- MaintenanceRoomFloor (X = 33..61, Z = -66..-42): North wing room connected via a 12-stud doorway at Z = -42.
+	- ControlRoomFloor (X = 65..89, Z = -18..+18): East wing room connected via a 12-stud doorway at X = 65.
+	- CargoStorageFloor (X = 33..61, Z = 42..66): South wing room connected via a 12-stud doorway at Z = +42.
+	- Continuous 12-stud-tall collision boundary walls around the entire station perimeter.
+	- Three interactive Station Objective terminals (Maintenance Fuse Box, Control Signal Console, Cargo Manifest Crate).
+]]
+function HubService:BuildStation001Environment(): Model
+	local activeStation = self._activeStationFolder
+	assert(activeStation, "ActiveStation folder not initialized")
+
+	activeStation:ClearAllChildren()
+	table.clear(self._stationEntrySpawnParts)
+	table.clear(self._stationObjectiveParts)
+	self._extractionZonePart = nil
+
+	-- Rebuild floor/wall registries so we keep Train Hub floors/walls + active station floors/walls
+	local keptFloors: { BasePart } = {}
+	for _, p in ipairs(self._collidableFloorParts) do
+		if p.Parent and p.Parent ~= activeStation then
+			table.insert(keptFloors, p)
+		end
+	end
+	self._collidableFloorParts = keptFloors
+
+	local keptWalls: { BasePart } = {}
+	for _, p in ipairs(self._collidableWallParts) do
+		if p.Parent and p.Parent ~= activeStation then
+			table.insert(keptWalls, p)
+		end
+	end
+	self._collidableWallParts = keptWalls
+
+	local stationModel = Instance.new("Model")
+	stationModel.Name = "Station001_ForgottenTerminal"
+	stationModel.Parent = activeStation
+	self._stationModel = stationModel
+
+	-- 1. Zero-Gap Train-to-Station Bridge Deck (X = 9..13, Z = -42..+42, Y = 0)
+	local bridgeDeck = createPart({
+		name = "TrainToStationBridge",
+		size = Vector3.new(4, 1.5, 84),
+		cframe = CFrame.new(11, 0, 0),
+		color = Color3.fromRGB(51, 65, 85),
+		material = Enum.Material.DiamondPlate,
+		canCollide = true,
+		parent = stationModel,
+	})
+	self:_registerFloorPart(bridgeDeck)
+
+	-- 2. Station 001 Boarding & Extraction Platform Floor (X = 11..29, Z = -42..+42, Y = 0)
+	local platformFloor = createPart({
+		name = "StationPlatformFloor",
+		size = Vector3.new(18, 1.5, 84),
+		cframe = CFrame.new(20, 0, 0),
+		color = Color3.fromRGB(45, 55, 72),
+		material = Enum.Material.DiamondPlate,
+		canCollide = true,
+		parent = stationModel,
+	})
+	stationModel.PrimaryPart = platformFloor
+	self:_registerFloorPart(platformFloor)
+
+	-- 3. Station 001 Main Concourse Floor (X = 29..65, Z = -42..+42, Y = 0)
+	local concourseFloor = createPart({
+		name = "MainConcourseFloor",
+		size = Vector3.new(36, 1.5, 84),
+		cframe = CFrame.new(47, 0, 0),
+		color = Color3.fromRGB(38, 46, 62),
+		material = Enum.Material.SmoothPlastic,
+		canCollide = true,
+		parent = stationModel,
+	})
+	self:_registerFloorPart(concourseFloor)
+
+	-- 4. Maintenance Room Floor — North Wing (X = 33..61, Z = -66..-42, Y = 0)
+	local maintenanceFloor = createPart({
+		name = "MaintenanceRoomFloor",
+		size = Vector3.new(28, 1.5, 24),
+		cframe = CFrame.new(47, 0, -54),
+		color = Color3.fromRGB(44, 52, 64),
+		material = Enum.Material.DiamondPlate,
+		canCollide = true,
+		parent = stationModel,
+	})
+	self:_registerFloorPart(maintenanceFloor)
+
+	-- 5. Control Room Floor — East Wing (X = 65..89, Z = -18..+18, Y = 0)
+	local controlRoomFloor = createPart({
+		name = "ControlRoomFloor",
+		size = Vector3.new(24, 1.5, 36),
+		cframe = CFrame.new(77, 0, 0),
+		color = Color3.fromRGB(32, 48, 68),
+		material = Enum.Material.SmoothPlastic,
+		canCollide = true,
+		parent = stationModel,
+	})
+	self:_registerFloorPart(controlRoomFloor)
+
+	-- 6. Cargo Storage Bay Floor — South Wing (X = 33..61, Z = 42..66, Y = 0)
+	local cargoFloor = createPart({
+		name = "CargoStorageFloor",
+		size = Vector3.new(28, 1.5, 24),
+		cframe = CFrame.new(47, 0, 54),
+		color = Color3.fromRGB(52, 48, 44),
+		material = Enum.Material.DiamondPlate,
+		canCollide = true,
+		parent = stationModel,
+	})
+	self:_registerFloorPart(cargoFloor)
+
+	-- 7. Six Solid Station 001 Entry Spawn Pads (X = 15..21, Z = 18..30, Y = 0.85, CanCollide = true)
+	-- Strictly outside ExtractionPlatformZone (16, 3, -8, r = 10.0), minimum distance = 26.02 studs.
+	for index, spawnPos in ipairs(GameConfig.STATION_ENTRY_SPAWNS) do
+		local entryPad = createPart({
+			name = string.format("StationEntrySpawn_%02d", index),
+			size = Vector3.new(4, 0.2, 4),
+			cframe = CFrame.new(spawnPos.X, 0.85, spawnPos.Z),
+			color = Color3.fromRGB(56, 189, 248),
+			material = Enum.Material.SmoothPlastic,
+			transparency = 0.15,
+			canCollide = true,
+			parent = stationModel,
+		})
+		CollectionService:AddTag(entryPad, GameConfig.Tags.StationEntrySpawn)
+		table.insert(self._stationEntrySpawnParts, entryPad)
+		self:_registerFloorPart(entryPad)
 	end
 
-	-- 8. Physical Extraction Platform Zone adjacent to Boarding Gate (Issue 04 & Remediation #1)
+	-- 8. Accessible Physical Extraction Platform Deck & Trigger Zone (X = 16, Z = -8)
+	local extractionDeck = createPart({
+		name = "ExtractionPlatformDeck",
+		size = Vector3.new(10, 0.2, 16),
+		cframe = CFrame.new(
+			GameConfig.EXTRACTION_ZONE_POSITION.X,
+			0.85,
+			GameConfig.EXTRACTION_ZONE_POSITION.Z
+		),
+		color = Color3.fromRGB(16, 185, 129),
+		material = Enum.Material.DiamondPlate,
+		transparency = 0.1,
+		canCollide = true,
+		parent = stationModel,
+	})
+	self:_registerFloorPart(extractionDeck)
+
 	local extractionZone = createPart({
 		name = "ExtractionPlatformZone",
 		size = GameConfig.EXTRACTION_ZONE_SIZE,
 		cframe = CFrame.new(GameConfig.EXTRACTION_ZONE_POSITION),
 		color = Color3.fromRGB(16, 185, 129),
 		material = Enum.Material.Neon,
-		transparency = 0.65,
+		transparency = 0.72,
 		canCollide = false,
-		parent = train,
+		parent = stationModel,
 	})
 	CollectionService:AddTag(extractionZone, GameConfig.Tags.ExtractionZone)
 
@@ -434,6 +682,276 @@ function HubService:_buildTrainHubGeometry()
 	extractionPrompt.Parent = extractionZone
 
 	self._extractionZonePart = extractionZone
+
+	-- 9. Station Perimeter Collision Walls & Room Dividers with 12-stud Doorways (CanCollide = true)
+	local wallSpecs = {
+		-- Platform & Concourse North Perimeter (leaving X = 41..53 open for Maintenance Room corridor)
+		{
+			name = "StationWall_NorthWest",
+			size = Vector3.new(30, 12, 1),
+			pos = Vector3.new(26, 6.5, -42.5),
+		},
+		{
+			name = "StationWall_NorthEast",
+			size = Vector3.new(12, 12, 1),
+			pos = Vector3.new(59, 6.5, -42.5),
+		},
+		-- Maintenance Room Perimeter (X = 33..61, Z = -66..-42)
+		{
+			name = "MaintenanceWall_North",
+			size = Vector3.new(28, 12, 1),
+			pos = Vector3.new(47, 6.5, -66.5),
+		},
+		{
+			name = "MaintenanceWall_West",
+			size = Vector3.new(1, 12, 24),
+			pos = Vector3.new(32.5, 6.5, -54),
+		},
+		{
+			name = "MaintenanceWall_East",
+			size = Vector3.new(1, 12, 24),
+			pos = Vector3.new(61.5, 6.5, -54),
+		},
+		-- Platform & Concourse South Perimeter (leaving X = 41..53 open for Cargo Storage corridor)
+		{
+			name = "StationWall_SouthWest",
+			size = Vector3.new(30, 12, 1),
+			pos = Vector3.new(26, 6.5, 42.5),
+		},
+		{
+			name = "StationWall_SouthEast",
+			size = Vector3.new(12, 12, 1),
+			pos = Vector3.new(59, 6.5, 42.5),
+		},
+		-- Cargo Storage Perimeter (X = 33..61, Z = 42..66)
+		{
+			name = "CargoWall_South",
+			size = Vector3.new(28, 12, 1),
+			pos = Vector3.new(47, 6.5, 66.5),
+		},
+		{
+			name = "CargoWall_West",
+			size = Vector3.new(1, 12, 24),
+			pos = Vector3.new(32.5, 6.5, 54),
+		},
+		{
+			name = "CargoWall_East",
+			size = Vector3.new(1, 12, 24),
+			pos = Vector3.new(61.5, 6.5, 54),
+		},
+		-- Concourse East Wall (leaving Z = -6..+6 open for Control Room doorway)
+		{
+			name = "ConcourseWall_EastNorth",
+			size = Vector3.new(1, 12, 36),
+			pos = Vector3.new(65.5, 6.5, -24),
+		},
+		{
+			name = "ConcourseWall_EastSouth",
+			size = Vector3.new(1, 12, 36),
+			pos = Vector3.new(65.5, 6.5, 24),
+		},
+		-- Control Room Perimeter (X = 65..89, Z = -18..+18)
+		{
+			name = "ControlWall_East",
+			size = Vector3.new(1, 12, 36),
+			pos = Vector3.new(89.5, 6.5, 0),
+		},
+		{
+			name = "ControlWall_North",
+			size = Vector3.new(24, 12, 1),
+			pos = Vector3.new(77, 6.5, -18.5),
+		},
+		{
+			name = "ControlWall_South",
+			size = Vector3.new(24, 12, 1),
+			pos = Vector3.new(77, 6.5, 18.5),
+		},
+	}
+
+	for _, spec in ipairs(wallSpecs) do
+		local wallPart = createPart({
+			name = spec.name,
+			size = spec.size,
+			cframe = CFrame.new(spec.pos),
+			color = Color3.fromRGB(36, 42, 54),
+			material = Enum.Material.Metal,
+			canCollide = true,
+			parent = stationModel,
+		})
+		self:_registerWallPart(wallPart)
+	end
+
+	-- 10. Interactive Station 001 Objective Terminals in the 3 Wing Rooms
+	local objectiveNodes = {
+		{
+			name = "ObjectiveNode_01_Maintenance",
+			objectText = "Auxiliary Fuse Socket (Maintenance Room)",
+			actionText = "Complete Station Objective Task",
+			pos = Vector3.new(47, 3, -58),
+			color = Color3.fromRGB(245, 158, 11),
+		},
+		{
+			name = "ObjectiveNode_02_Control",
+			objectText = "Dispatch Signal Relay (Control Room)",
+			actionText = "Complete Station Objective Task",
+			pos = Vector3.new(82, 3, 0),
+			color = Color3.fromRGB(56, 189, 248),
+		},
+		{
+			name = "ObjectiveNode_03_Cargo",
+			objectText = "Sealed Transit Cargo Rack (Cargo Storage)",
+			actionText = "Complete Station Objective Task",
+			pos = Vector3.new(47, 3, 58),
+			color = Color3.fromRGB(168, 85, 247),
+		},
+	}
+
+	for index, nodeSpec in ipairs(objectiveNodes) do
+		local nodePart = createPart({
+			name = nodeSpec.name,
+			size = Vector3.new(4, 4.5, 2.5),
+			cframe = CFrame.new(nodeSpec.pos),
+			color = nodeSpec.color,
+			material = Enum.Material.Metal,
+			canCollide = true,
+			parent = stationModel,
+		})
+		CollectionService:AddTag(nodePart, GameConfig.Tags.StationObjective)
+		nodePart:SetAttribute("ObjectiveIndex", index)
+		nodePart:SetAttribute("Completed", false)
+
+		local prompt = Instance.new("ProximityPrompt")
+		prompt.Name = "StationObjectivePrompt_" .. tostring(index)
+		prompt.ObjectText = nodeSpec.objectText
+		prompt.ActionText = nodeSpec.actionText
+		prompt.KeyboardKeyCode = Enum.KeyCode.E
+		prompt.GamepadKeyCode = Enum.KeyCode.ButtonX
+		prompt.MaxActivationDistance = 12
+		prompt.HoldDuration = 0
+		prompt.RequiresLineOfSight = false
+		prompt.Parent = nodePart
+
+		table.insert(self._stationObjectiveParts, nodePart)
+	end
+
+	return stationModel
+end
+
+function HubService:SetStationDoorsOpen(isOpen: boolean)
+	self._stationDoorsOpen = isOpen
+	for _, doorPart in ipairs(self._trainDoorParts) do
+		doorPart.CanCollide = not isOpen
+		doorPart.Transparency = if isOpen then 0.85 else 0.15
+	end
+end
+
+function HubService:AreStationDoorsOpen(): boolean
+	return self._stationDoorsOpen
+end
+
+function HubService:GetStationObjectiveParts(): { BasePart }
+	return table.clone(self._stationObjectiveParts)
+end
+
+--[[
+	Priority 2 Verification Helpers:
+	Verifies that a 3D world position is physically supported underneath by at least one
+	anchored, CanCollide=true floor or spawn pad part with no fall-through gaps.
+]]
+function HubService:IsPositionSupportedByFloor(position: Vector3): boolean
+	for _, floorPart in ipairs(self._collidableFloorParts) do
+		if floorPart.Parent and floorPart.Anchored and floorPart.CanCollide then
+			local center = floorPart.Position
+			local halfX = floorPart.Size.X * 0.5
+			local halfY = floorPart.Size.Y * 0.5
+			local halfZ = floorPart.Size.Z * 0.5
+			local topY = center.Y + halfY
+
+			if
+				position.X >= (center.X - halfX - 0.05)
+				and position.X <= (center.X + halfX + 0.05)
+				and position.Z >= (center.Z - halfZ - 0.05)
+				and position.Z <= (center.Z + halfZ + 0.05)
+			then
+				local verticalClearance = position.Y - topY
+				if verticalClearance >= -0.5 and verticalClearance <= 6.0 then
+					return true
+				end
+			end
+		end
+	end
+	return false
+end
+
+function HubService:IsPositionBlockedByWall(position: Vector3, playerRadius: number?): boolean
+	local radius = playerRadius or 1.0
+	local checkList: { BasePart } = table.clone(self._collidableWallParts)
+	for _, doorPart in ipairs(self._trainDoorParts) do
+		if doorPart.CanCollide then
+			table.insert(checkList, doorPart)
+		end
+	end
+
+	for _, wallPart in ipairs(checkList) do
+		if wallPart.Parent and wallPart.Anchored and wallPart.CanCollide then
+			local center = wallPart.Position
+			local halfX = wallPart.Size.X * 0.5 + radius
+			local halfY = wallPart.Size.Y * 0.5
+			local halfZ = wallPart.Size.Z * 0.5 + radius
+
+			if
+				position.X > (center.X - halfX)
+				and position.X < (center.X + halfX)
+				and position.Z > (center.Z - halfZ)
+				and position.Z < (center.Z + halfZ)
+				and position.Y >= (center.Y - halfY)
+				and position.Y <= (center.Y + halfY)
+			then
+				return true
+			end
+		end
+	end
+	return false
+end
+
+function HubService:IsPathWalkable(
+	fromPos: Vector3,
+	toPos: Vector3,
+	stepStuds: number?
+): (boolean, string)
+	local step = stepStuds or 1.0
+	local delta = toPos - fromPos
+	local totalDist = delta.Magnitude
+	local steps = math.max(1, math.ceil(totalDist / step))
+
+	for i = 0, steps do
+		local alpha = i / steps
+		local samplePos = Vector3.new(
+			fromPos.X + (delta.X * alpha),
+			fromPos.Y + (delta.Y * alpha),
+			fromPos.Z + (delta.Z * alpha)
+		)
+		if not self:IsPositionSupportedByFloor(samplePos) then
+			return false,
+				string.format(
+					"UnsupportedFloorAt(%.1f, %.1f, %.1f)",
+					samplePos.X,
+					samplePos.Y,
+					samplePos.Z
+				)
+		end
+		if self:IsPositionBlockedByWall(samplePos, 0.6) then
+			return false,
+				string.format(
+					"BlockedByWallAt(%.1f, %.1f, %.1f)",
+					samplePos.X,
+					samplePos.Y,
+					samplePos.Z
+				)
+		end
+	end
+
+	return true, "WalkablePathVerified"
 end
 
 -- Remediation #2: Never restore Humanoid.Health or attempt to revive/pivot a dead character.
@@ -471,7 +989,7 @@ function HubService:SpawnPlayerInHub(player: Player, slotIndex: number?): boolea
 	local resolvedSlot = slotIndex or self:GetPlayerSpawnSlot(player.UserId)
 	local chosenIndex = ((resolvedSlot - 1) % spawnCount) + 1
 	local spawnPad = self._spawnParts[chosenIndex]
-	return self:_pivotLivingCharacter(player, spawnPad.CFrame + Vector3.new(0, 3, 0))
+	return self:_pivotLivingCharacter(player, spawnPad.CFrame + Vector3.new(0, 2.9, 0))
 end
 
 -- Remediation #2: Eliminated players respawn as a fresh character into the Hub Recovery Bay
@@ -482,10 +1000,10 @@ function HubService:SpawnEliminatedPlayerInHub(player: Player, slotIndex: number
 	end
 	local resolvedSlot = slotIndex or self:GetPlayerSpawnSlot(player.UserId)
 	local berth = self._eliminatedSpawnParts[((resolvedSlot - 1) % count) + 1]
-	return self:_pivotLivingCharacter(player, berth.CFrame + Vector3.new(0, 3, 0))
+	return self:_pivotLivingCharacter(player, berth.CFrame + Vector3.new(0, 2.9, 0))
 end
 
--- Remediation #1: All 6 active station spawns are located at Z = 18..30, outside the Extraction Zone (Z = -8, r = 12)
+-- Priority 2 & Remediation #1: All 6 active station spawns sit on solid CanCollide=true StationPlatformFloor + pads at Z = 18..30
 function HubService:GetActiveStationSpawnPosition(slotIndex: number): Vector3
 	local spawns = GameConfig.STATION_ENTRY_SPAWNS
 	local chosenIndex = ((slotIndex - 1) % #spawns) + 1
@@ -493,6 +1011,9 @@ function HubService:GetActiveStationSpawnPosition(slotIndex: number): Vector3
 end
 
 function HubService:SpawnPlayerInActiveStation(player: Player, slotIndex: number?): boolean
+	if not self._stationModel or not self._stationModel.Parent then
+		self:BuildStation001Environment()
+	end
 	local resolvedSlot = slotIndex or self:GetPlayerSpawnSlot(player.UserId)
 	local targetPos = self:GetActiveStationSpawnPosition(resolvedSlot)
 	return self:_pivotLivingCharacter(player, CFrame.new(targetPos))
@@ -506,7 +1027,7 @@ function HubService:MoveCrewToBoardingBay(players: { Player })
 	for _, player in ipairs(players) do
 		local slotIndex = self:GetPlayerSpawnSlot(player.UserId)
 		local marker = self._boardingSpawnParts[((slotIndex - 1) % count) + 1]
-		self:_pivotLivingCharacter(player, marker.CFrame + Vector3.new(0, 3, 0))
+		self:_pivotLivingCharacter(player, marker.CFrame + Vector3.new(0, 2.9, 0))
 	end
 end
 
@@ -533,6 +1054,7 @@ function HubService:IsPositionInExtractionZone(position: Vector3): boolean
 
 	return horizontalDist <= GameConfig.EXTRACTION_ZONE_RADIUS
 		and verticalDist <= GameConfig.EXTRACTION_VERTICAL_HALF_HEIGHT
+		and self:IsPositionSupportedByFloor(position)
 end
 
 function HubService:IsPlayerInExtractionZone(player: Player): boolean
@@ -550,10 +1072,32 @@ function HubService:IsPlayerInExtractionZone(player: Player): boolean
 end
 
 function HubService:ClearRuntimeStation()
+	self:SetStationDoorsOpen(false)
 	local activeStation = self._activeStationFolder
 	if activeStation then
 		activeStation:ClearAllChildren()
 	end
+	self._stationModel = nil
+	self._extractionZonePart = nil
+	table.clear(self._stationEntrySpawnParts)
+	table.clear(self._stationObjectiveParts)
+
+	-- Retain only Train Hub floor/wall parts in the collision registries
+	local keptFloors: { BasePart } = {}
+	for _, p in ipairs(self._collidableFloorParts) do
+		if p.Parent and p.Parent ~= activeStation then
+			table.insert(keptFloors, p)
+		end
+	end
+	self._collidableFloorParts = keptFloors
+
+	local keptWalls: { BasePart } = {}
+	for _, p in ipairs(self._collidableWallParts) do
+		if p.Parent and p.Parent ~= activeStation then
+			table.insert(keptWalls, p)
+		end
+	end
+	self._collidableWallParts = keptWalls
 end
 
 return HubService

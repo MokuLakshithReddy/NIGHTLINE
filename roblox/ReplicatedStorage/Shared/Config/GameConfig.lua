@@ -3,7 +3,7 @@
 	GameConfig.lua
 	Centralized tunable configuration for NIGHTLINE: LAST TRAIN.
 	All round timings, crew limits, movement physics bounds, station spawn coordinates,
-	interaction tolerances, and rate limits live here.
+	station environment bounds, interaction tolerances, and rate limits live here.
 ]]
 
 local NetworkTypes = require(script.Parent.Parent.Types.NetworkTypes)
@@ -21,7 +21,7 @@ export type RoundDurationsMap = {
 
 local GameConfig = {
 	GAME_TITLE = "NIGHTLINE: LAST TRAIN",
-	VERSION = "0.1.2-milestone1-remediated",
+	VERSION = "0.2.0-station001-playable",
 
 	-- Crew & Server Limits (Appendix A)
 	MAX_PLAYERS_PER_SERVER = 6,
@@ -57,21 +57,32 @@ local GameConfig = {
 	SPRINT_COOLDOWN_SECONDS = 0.1,
 	DEFAULT_MAX_HEALTH = 100,
 
-	-- Physical Extraction Platform & Station Entry Spawns (Remediation #1: All 6 station spawns outside extraction zone)
-	EXTRACTION_ZONE_POSITION = Vector3.new(15, 2.5, -8),
-	EXTRACTION_ZONE_SIZE = Vector3.new(8, 8, 16),
-	EXTRACTION_ZONE_RADIUS = 12.0,
+	-- Physical Extraction Platform & Station Entry Spawns (Priority 2: Playable Station 001 Environment)
+	-- Extraction zone sits on the North-Center Station Platform outside the Z = -8 Train Boarding Doorway.
+	EXTRACTION_ZONE_POSITION = Vector3.new(16, 3.0, -8),
+	EXTRACTION_ZONE_SIZE = Vector3.new(10, 8, 16),
+	EXTRACTION_ZONE_RADIUS = 10.0,
 	EXTRACTION_VERTICAL_HALF_HEIGHT = 8.0,
 
-	-- Six Station 001 Concourse Arrival Spawns (Z = 18..30, minimum 26 studs away from Extraction Zone at Z = -8)
+	-- Six Station 001 Arrival Spawns on the South Station Platform (X = 15..21, Z = 18..30).
+	-- Supported by solid CanCollide=true StationPlatformFloor + StationEntrySpawn pads.
+	-- Minimum distance to EXTRACTION_ZONE_POSITION (16, 3, -8) is 26.02 studs (radius = 10.0).
 	STATION_ENTRY_SPAWNS = table.freeze({
-		Vector3.new(14, 3, 18),
-		Vector3.new(18, 3, 18),
-		Vector3.new(14, 3, 24),
-		Vector3.new(18, 3, 24),
-		Vector3.new(14, 3, 30),
-		Vector3.new(18, 3, 30),
+		Vector3.new(15, 3.75, 18),
+		Vector3.new(21, 3.75, 18),
+		Vector3.new(15, 3.75, 24),
+		Vector3.new(21, 3.75, 24),
+		Vector3.new(15, 3.75, 30),
+		Vector3.new(21, 3.75, 30),
 	}) :: { Vector3 },
+
+	-- Station 001 Exploration Waypoints / Objective Coordinates (on solid CanCollide=true floors)
+	STATION_EXPLORATION_POINTS = table.freeze({
+		MainConcourse = Vector3.new(45, 3.75, 0),
+		MaintenanceRoom = Vector3.new(47, 3.75, -54),
+		ControlRoom = Vector3.new(77, 3.75, 0),
+		CargoStorage = Vector3.new(47, 3.75, 54),
+	}),
 
 	-- Security & Interaction Thresholds (Section 6.2 & Section 11.1)
 	MAX_INTERACTION_DISTANCE = 14.0,
@@ -88,6 +99,7 @@ local GameConfig = {
 		ExtractionZone = "NightlineExtractionZone",
 		EquipmentLocker = "NightlineEquipmentLocker",
 		DestinationTerminal = "NightlineDestinationTerminal",
+		StationObjective = "NightlineStationObjective",
 	}),
 }
 

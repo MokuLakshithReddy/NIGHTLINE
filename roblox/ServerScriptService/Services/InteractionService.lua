@@ -87,6 +87,8 @@ function InteractionService:HandlePromptTriggered(
 		return self._roundService:TogglePlayerBoardingReady(player)
 	elseif CollectionService:HasTag(parentPart, GameConfig.Tags.ExtractionZone) then
 		return self._roundService:TryExtractPlayer(player)
+	elseif CollectionService:HasTag(parentPart, GameConfig.Tags.StationObjective) then
+		return self._roundService:HandleStationObjectiveInteraction(player, parentPart)
 	end
 
 	return false, "UnhandledTag"
