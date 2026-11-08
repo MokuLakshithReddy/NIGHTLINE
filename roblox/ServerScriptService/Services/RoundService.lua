@@ -860,6 +860,12 @@ function RoundService:_enterExplorationPhase()
 	end
 
 	self:_transitionTo("EXPLORATION", GameConfig.RoundDurations.EXPLORATION)
+	if self._monsterService then
+		local started, startReason = self._monsterService:StartEncounter()
+		if not started then
+			warn("[RoundService] Hollow encounter did not start:", startReason)
+		end
+	end
 	self:_broadcastObjectivePreview()
 	self:BroadcastNotification(
 		"ArrivedAtStation",
@@ -883,6 +889,10 @@ end
 function RoundService:_enterReturnPhase()
 	if self._state == "RETURN" then
 		return
+	end
+
+	if self._monsterService then
+		self._monsterService:StopEncounter()
 	end
 
 	if self._hubService then
