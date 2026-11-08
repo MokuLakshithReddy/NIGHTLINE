@@ -857,27 +857,34 @@ function HubService:BuildStation001Environment(): Model
 
 		local shellParts = {
 			createPart({
-				name = hideSpec.id .. "_LeftWall", size = Vector3.new(0.16, 6.1, 3.0),
+				name = hideSpec.id .. "_LeftWall",
+				size = Vector3.new(0.16, 6.1, 3.0),
 				cframe = CFrame.new(center + Vector3.new(-1.52, 0, 0)),
-				color = Color3.fromRGB(51, 65, 85), material = Enum.Material.Metal, parent = stationModel,
+				color = Color3.fromRGB(51, 65, 85),
+				material = Enum.Material.Metal,
+				parent = stationModel,
 			}),
 			createPart({
-				name = hideSpec.id .. "_RightWall", size = Vector3.new(0.16, 6.1, 3.0),
+				name = hideSpec.id .. "_RightWall",
+				size = Vector3.new(0.16, 6.1, 3.0),
 				cframe = CFrame.new(center + Vector3.new(1.52, 0, 0)),
 				color = Color3.fromRGB(51, 65, 85), material = Enum.Material.Metal, parent = stationModel,
 			}),
 			createPart({
-				name = hideSpec.id .. "_BackWall", size = Vector3.new(3.0, 6.1, 0.16),
+				name = hideSpec.id .. "_BackWall",
+				size = Vector3.new(3.0, 6.1, 0.16),
 				cframe = CFrame.new(center + Vector3.new(0, 0, -1.52)),
 				color = Color3.fromRGB(51, 65, 85), material = Enum.Material.Metal, parent = stationModel,
 			}),
 			createPart({
-				name = hideSpec.id .. "_Top", size = Vector3.new(3.0, 0.16, 3.0),
+				name = hideSpec.id .. "_Top",
+				size = Vector3.new(3.0, 0.16, 3.0),
 				cframe = CFrame.new(center + Vector3.new(0, 3.08, 0)),
 				color = Color3.fromRGB(51, 65, 85), material = Enum.Material.Metal, parent = stationModel,
 			}),
 			createPart({
-				name = hideSpec.id .. "_Floor", size = Vector3.new(3.0, 0.16, 3.0),
+				name = hideSpec.id .. "_Floor",
+				size = Vector3.new(3.0, 0.16, 3.0),
 				cframe = CFrame.new(center + Vector3.new(0, -3.08, 0)),
 				color = Color3.fromRGB(51, 65, 85), material = Enum.Material.Metal, parent = stationModel,
 			}),
