@@ -72,6 +72,8 @@ local function bootstrapServer()
 	})
 
 	MovementService:SetRoundService(RoundService)
+	MovementService:SetMonsterService(MonsterService)
+	HubService:SetMonsterService(MonsterService)
 	InventoryService:SetRoundService(RoundService)
 	ObjectiveService:SetRoundService(RoundService)
 	ObjectiveService:SetMonsterService(MonsterService)
