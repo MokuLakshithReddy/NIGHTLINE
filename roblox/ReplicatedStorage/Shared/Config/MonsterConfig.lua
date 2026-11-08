@@ -186,6 +186,10 @@ local MonsterConfig = {
 		DoorTransit = 0.50,
 	}),
 	NOISE_EVENT_LIFETIME_SECONDS = 6.0,
+	MAX_ACTIVE_NOISE_EVENTS = 96,
+	WALK_NOISE_INTERVAL_SECONDS = 1.0,
+	SPRINT_NOISE_INTERVAL_SECONDS = 0.6,
+	MIN_MOVEMENT_FOR_NOISE_STUDS = 1.25,
 
 	-- Fair Attack & Elimination Boundaries (Section 5.3)
 	ATTACK_RANGE_STUDS = 6.5,
