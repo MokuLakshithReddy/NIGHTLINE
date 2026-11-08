@@ -143,31 +143,69 @@ end
 -- ============================================================================
 -- 2. Noise Events Interface
 -- ============================================================================
-function MonsterService:EmitNoiseEvent(
+function MonsterService:_recordNoiseEvent(
 	sourcePlayer: Player?,
 	category: NetworkTypes.NoiseCategory,
-	position: Vector3,
-	customRadius: number?,
-	customIntensity: number?
+	position: Vector3
 ): NetworkTypes.NoiseEvent
 	local now = os.clock()
-	local radius = customRadius or MonsterConfig.NoiseRadii[category] or 20.0
-	local intensity = customIntensity or MonsterConfig.NoiseIntensities[category] or 0.5
-
 	local eventRecord: NetworkTypes.NoiseEvent = {
 		id = self._nextNoiseEventId,
 		sourceUserId = if sourcePlayer then sourcePlayer.UserId else nil,
 		category = category,
 		position = position,
-		radius = radius,
-		intensity = intensity,
+		radius = MonsterConfig.NoiseRadii[category],
+		intensity = MonsterConfig.NoiseIntensities[category],
 		createdAt = now,
 		expiresAt = now + MonsterConfig.NOISE_EVENT_LIFETIME_SECONDS,
 	}
 	self._nextNoiseEventId += 1
 	table.insert(self._noiseEvents, eventRecord)
+	if #self._noiseEvents > MonsterConfig.MAX_ACTIVE_NOISE_EVENTS then
+		table.remove(self._noiseEvents, 1)
+	end
 	self:PruneExpiredNoiseEvents(now)
 	return eventRecord
+end
+
+function MonsterService:EmitPlayerNoise(
+	sourcePlayer: Player,
+	category: NetworkTypes.NoiseCategory
+): (NetworkTypes.NoiseEvent?, string)
+	if category ~= "Walk" and category ~= "Sprint" and category ~= "ObjectiveInteraction" then
+		return nil, "UnsupportedPlayerNoiseCategory"
+	end
+
+	local security = self._securityService
+	if not security or not security:ValidatePlayerInstance(sourcePlayer) then
+		return nil, "InvalidPlayer"
+	end
+
+	if self._roundService then
+		if self._roundService:GetPlayerStatus(sourcePlayer) ~= "IN_EXPEDITION" then
+			return nil, "PlayerNotInExpedition"
+		end
+	end
+
+	local _, rootPart, humanoid = security:GetValidatedCharacterRoot(sourcePlayer)
+	if not rootPart or not humanoid or humanoid.Health <= 0 then
+		return nil, "PlayerNotAlive"
+	end
+
+	return self:_recordNoiseEvent(sourcePlayer, category, rootPart.Position), "NoiseEmitted"
+end
+
+function MonsterService:EmitWorldNoise(
+	category: NetworkTypes.NoiseCategory,
+	position: Vector3
+): (NetworkTypes.NoiseEvent?, string)
+	if category ~= "DoorTransit" then
+		return nil, "UnsupportedWorldNoiseCategory"
+	end
+	if typeof(position) ~= "Vector3" then
+		return nil, "InvalidWorldNoisePosition"
+	end
+	return self:_recordNoiseEvent(nil, category, position), "NoiseEmitted"
 end
 
 function MonsterService:PruneExpiredNoiseEvents(atClock: number?)

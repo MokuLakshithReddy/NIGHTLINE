@@ -604,9 +604,9 @@ function ObjectiveService:_advanceProgress(
 	end
 end
 
-function ObjectiveService:_emitObjectiveNoise(player: Player, position: Vector3)
+function ObjectiveService:_emitObjectiveNoise(player: Player, _position: Vector3)
 	if self._monsterService then
-		self._monsterService:EmitNoiseEvent(player, "ObjectiveInteraction", position)
+		self._monsterService:EmitPlayerNoise(player, "ObjectiveInteraction")
 	end
 end
 

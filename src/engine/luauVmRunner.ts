@@ -433,6 +433,15 @@ end
 
 local oldTypeof = typeof
 local function typeof(val)
+	if
+		type(val) == "table"
+		and val.X ~= nil
+		and val.Y ~= nil
+		and val.Z ~= nil
+		and val.Magnitude ~= nil
+	then
+		return "Vector3"
+	end
 	if type(val) == "table" and val.ClassName ~= nil then
 		return "Instance"
 	end
@@ -580,6 +589,7 @@ end
 -- ============================================================================
 
 local GameConfig = require(ReplicatedStorage.Shared.Config.GameConfig)
+local MonsterConfig = require(ReplicatedStorage.Shared.Config.MonsterConfig)
 local RemotesRegistry = require(ReplicatedStorage.Remotes.RemotesRegistry)
 local SecurityService = require(ServerScriptService.Services.SecurityService)
 local MovementService = require(ServerScriptService.Services.MovementService)
@@ -618,6 +628,8 @@ RoundService:Init({
 	monsterService = MonsterService,
 })
 MovementService:SetRoundService(RoundService)
+MovementService:SetMonsterService(MonsterService)
+HubService:SetMonsterService(MonsterService)
 InventoryService:SetRoundService(RoundService)
 ObjectiveService:SetRoundService(RoundService)
 ObjectiveService:SetMonsterService(MonsterService)
@@ -1221,11 +1233,50 @@ assert(okTrans5 == true and MonsterService:GetState() == "RETURN", "Must transit
 local okTrans6 = MonsterService:TransitionState("PATROL")
 assert(okTrans6 == true and MonsterService:GetState() == "PATROL", "Must transition RETURN -> PATROL")
 
--- 7B: Noise Events
-MonsterService:EmitNoiseEvent(p1, "Walk", Vector3.new(47, 3.75, 10))
-local flareNoise = MonsterService:EmitNoiseEvent(p4, "FlareDistraction", Vector3.new(50, 3.75, -10))
-local strongestNoise = MonsterService:SelectStrongestNoiseStimulus(Vector3.new(47, 3.75, 0))
-assert(strongestNoise ~= nil and strongestNoise.id == flareNoise.id, "SelectStrongestNoiseStimulus must prioritize high-intensity FlareDistraction")
+-- 7B: Server-authoritative, paced movement and world noise sources.
+MonsterService:PruneExpiredNoiseEvents(os.clock() + 10)
+local noiseRecord = MovementService:EnsureRecord(p1.UserId)
+noiseRecord.lastNoiseAt = 0
+noiseRecord.lastNoisePosition = p1.Character.HumanoidRootPart.Position
+local walkTarget = p1.Character.HumanoidRootPart.Position + Vector3.new(3, 0, 0)
+walkPlayerAlongPath(p1, walkTarget)
+local walkEvents = MonsterService:GetActiveNoiseEvents()
+local foundWalkNoise = false
+for _, event in ipairs(walkEvents) do
+	if event.category == "Walk" and event.sourceUserId == p1.UserId then
+		foundWalkNoise = true
+		assert((event.position - walkTarget).Magnitude <= 3.0, "Walk noise position must be derived from a nearby server-observed character position")
+	end
+end
+assert(foundWalkNoise, "Validated player movement must emit paced Walk noise")
+
+local sprintOk = MovementService:HandleSprintRequest(p1, true)
+assert(sprintOk == true, "P1 must be allowed to sprint during the expedition")
+noiseRecord.lastNoiseAt = 0
+noiseRecord.lastNoisePosition = p1.Character.HumanoidRootPart.Position
+local sprintTarget = p1.Character.HumanoidRootPart.Position + Vector3.new(3, 0, 0)
+walkPlayerAlongPath(p1, sprintTarget)
+local sprintEvents = MonsterService:GetActiveNoiseEvents()
+local foundSprintNoise = false
+for _, event in ipairs(sprintEvents) do
+	if event.category == "Sprint" and event.sourceUserId == p1.UserId then
+		foundSprintNoise = true
+	end
+end
+assert(foundSprintNoise, "Validated sprint movement must emit Sprint noise")
+MovementService:HandleSprintRequest(p1, false)
+
+local doorNoise, doorNoiseReason = MonsterService:EmitWorldNoise("DoorTransit", p1.Character.HumanoidRootPart.Position)
+assert(doorNoise ~= nil and doorNoiseReason == "NoiseEmitted", "World door transition must emit DoorTransit noise")
+local invalidWorldNoise = MonsterService:EmitWorldNoise("Walk", p1.Character.HumanoidRootPart.Position)
+assert(invalidWorldNoise == nil, "World emitter must reject player-only noise categories")
+local strongestNoise = MonsterService:SelectStrongestNoiseStimulus(p1.Character.HumanoidRootPart.Position)
+assert(strongestNoise ~= nil, "Noise selector must choose a valid active stimulus")
+
+for _ = 1, MonsterConfig.MAX_ACTIVE_NOISE_EVENTS + 12 do
+	MonsterService:EmitWorldNoise("DoorTransit", p1.Character.HumanoidRootPart.Position)
+end
+assert(#MonsterService:GetActiveNoiseEvents() <= MonsterConfig.MAX_ACTIVE_NOISE_EVENTS, "Noise event storage must remain bounded")
 
 -- 7C: Station Navigation Graph & Route Computation
 local navGraph = MonsterService:GetStationNavigationGraph()

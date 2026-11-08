@@ -13,6 +13,8 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local GameConfig = require(ReplicatedStorage.Shared.Config.GameConfig)
+local MonsterConfig = require(ReplicatedStorage.Shared.Config.MonsterConfig)
+local NetworkTypes = require(ReplicatedStorage.Shared.Types.NetworkTypes)
 
 type PlayerMovementRecord = {
 	isSprinting: boolean,
@@ -21,6 +23,8 @@ type PlayerMovementRecord = {
 	lastSampleTime: number,
 	teleportGraceUntil: number,
 	violationCount: number,
+	lastNoiseAt: number,
+	lastNoisePosition: Vector3?,
 }
 
 local MovementService: { [string]: any } = {
@@ -29,6 +33,7 @@ local MovementService: { [string]: any } = {
 	_remotes = nil :: { [string]: RemoteEvent }?,
 	_securityService = nil :: any,
 	_roundService = nil :: any,
+	_monsterService = nil :: any,
 }
 
 function MovementService:Init(dependencies: {
@@ -42,6 +47,10 @@ end
 
 function MovementService:SetRoundService(roundService: any)
 	self._roundService = roundService
+end
+
+function MovementService:SetMonsterService(monsterService: any)
+	self._monsterService = monsterService
 end
 
 function MovementService:Start()
@@ -69,6 +78,8 @@ function MovementService:EnsureRecord(userId: number): PlayerMovementRecord
 		lastSampleTime = os.clock(),
 		teleportGraceUntil = 0,
 		violationCount = 0,
+		lastNoiseAt = 0,
+		lastNoisePosition = nil,
 	}
 	self._records[userId] = record
 	return record
@@ -93,6 +104,8 @@ function MovementService:NotifyServerTeleport(player: Player, targetPosition: Ve
 	record.teleportTargetPosition = targetPosition
 	record.lastSampleTime = now
 	record.teleportGraceUntil = now + GameConfig.TELEPORT_GRACE_SECONDS
+	record.lastNoiseAt = now
+	record.lastNoisePosition = targetPosition
 end
 
 function MovementService:IsPlayerSprinting(player: Player): boolean
@@ -136,6 +149,49 @@ function MovementService:HandleSprintRequest(player: Player, wantsSprint: any): 
 	return true, if wantsSprint then "Sprinting" else "Walking"
 end
 
+function MovementService:_emitMovementNoise(
+	player: Player,
+	currentPosition: Vector3,
+	record: PlayerMovementRecord,
+	now: number
+)
+	local monsterService = self._monsterService
+	local roundService = self._roundService
+	if not monsterService or not roundService then
+		return
+	end
+	if roundService:GetPlayerStatus(player) ~= "IN_EXPEDITION" then
+		return
+	end
+
+	local lastNoisePosition = record.lastNoisePosition
+	if not lastNoisePosition then
+		record.lastNoisePosition = currentPosition
+		return
+	end
+
+	local horizontalDistance = Vector3.new(
+		currentPosition.X - lastNoisePosition.X,
+		0,
+		currentPosition.Z - lastNoisePosition.Z
+	).Magnitude
+	if horizontalDistance < MonsterConfig.MIN_MOVEMENT_FOR_NOISE_STUDS then
+		return
+	end
+
+	local interval = if record.isSprinting
+		then MonsterConfig.SPRINT_NOISE_INTERVAL_SECONDS
+		else MonsterConfig.WALK_NOISE_INTERVAL_SECONDS
+	if now - record.lastNoiseAt < interval then
+		return
+	end
+
+	local category: NetworkTypes.NoiseCategory = if record.isSprinting then "Sprint" else "Walk"
+	monsterService:EmitPlayerNoise(player, category)
+	record.lastNoiseAt = now
+	record.lastNoisePosition = currentPosition
+end
+
 function MovementService:ValidatePlayerMovement(
 	player: Player,
 	dtSeconds: number
@@ -160,6 +216,7 @@ function MovementService:ValidatePlayerMovement(
 	local currentPos = rootPart.Position
 	if not record.lastValidPosition then
 		record.lastValidPosition = currentPos
+		record.lastNoisePosition = currentPos
 		record.lastSampleTime = now
 		return true, "InitialSample"
 	end
@@ -250,6 +307,9 @@ function MovementService:ValidatePlayerMovement(
 		return false, "RubberbandedVerticalDownwardAnomaly"
 	end
 
+	if horizontalDelta >= MonsterConfig.MIN_MOVEMENT_FOR_NOISE_STUDS then
+		self:_emitMovementNoise(player, currentPos, record, now)
+	end
 	record.lastValidPosition = currentPos
 	record.lastSampleTime = now
 	return true, "ValidMovement"
