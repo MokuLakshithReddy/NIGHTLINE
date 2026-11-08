@@ -139,8 +139,10 @@ function MonsterService:SetTransform(position: Vector3, lookDirection: Vector3?)
 		npcModel:PivotTo(CFrame.new(position))
 	end
 	local lastProgressPosition = self._lastProgressPosition
-	if not lastProgressPosition
-		or (position - lastProgressPosition).Magnitude >= MonsterConfig.MOVEMENT_PROGRESS_THRESHOLD_STUDS
+	if
+		not lastProgressPosition
+		or (position - lastProgressPosition).Magnitude
+			>= MonsterConfig.MOVEMENT_PROGRESS_THRESHOLD_STUDS
 	then
 		self._lastProgressPosition = position
 		self._lastProgressAt = os.clock()
@@ -1186,7 +1188,10 @@ function MonsterService:_recoverFromStuck(now: number)
 		return
 	end
 
-	if (self._currentPosition - lastProgressPosition).Magnitude >= MonsterConfig.MOVEMENT_PROGRESS_THRESHOLD_STUDS then
+	if
+		(self._currentPosition - lastProgressPosition).Magnitude
+		>= MonsterConfig.MOVEMENT_PROGRESS_THRESHOLD_STUDS
+	then
 		self._lastProgressPosition = self._currentPosition
 		self._lastProgressAt = now
 		return
