@@ -433,6 +433,15 @@ end
 
 local oldTypeof = typeof
 local function typeof(val)
+	if
+		type(val) == "table"
+		and val.X ~= nil
+		and val.Y ~= nil
+		and val.Z ~= nil
+		and val.Magnitude ~= nil
+	then
+		return "Vector3"
+	end
 	if type(val) == "table" and val.ClassName ~= nil then
 		return "Instance"
 	end
