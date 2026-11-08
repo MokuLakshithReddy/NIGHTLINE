@@ -987,6 +987,14 @@ function HubService:GetStationWaypointGraph(): { [string]: NetworkTypes.StationW
 	return table.clone(self._stationWaypointGraph)
 end
 
+function HubService:GetActiveStationModel(): Model?
+	local stationModel = self._stationModel
+	if stationModel and stationModel.Parent then
+		return stationModel
+	end
+	return nil
+end
+
 --[[
 	Verifies that a 3D world position is physically supported underneath by at least one
 	anchored, CanCollide=true floor or spawn pad part with no fall-through gaps.
