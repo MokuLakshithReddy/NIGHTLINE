@@ -56,6 +56,9 @@ local MonsterService: { [string]: any } = {
 	_patrolNeighborCursor = 0,
 	_attackWindupUserId = nil :: number?,
 	_attackWindupEndsAt = 0,
+	_lastProgressPosition = nil :: Vector3?,
+	_lastProgressAt = 0,
+	_ignoreTargetUntil = 0,
 }
 
 function MonsterService:Init(dependencies: {
@@ -134,6 +137,13 @@ function MonsterService:SetTransform(position: Vector3, lookDirection: Vector3?)
 	local npcModel = self._npcModel
 	if npcModel and npcModel.Parent then
 		npcModel:PivotTo(CFrame.new(position))
+	end
+	local lastProgressPosition = self._lastProgressPosition
+	if not lastProgressPosition
+		or (position - lastProgressPosition).Magnitude >= MonsterConfig.MOVEMENT_PROGRESS_THRESHOLD_STUDS
+	then
+		self._lastProgressPosition = position
+		self._lastProgressAt = os.clock()
 	end
 end
 
@@ -981,6 +991,9 @@ function MonsterService:StartEncounter(): (boolean, string)
 	self._lastInvestigatedNoiseId = nil
 	self._attackWindupUserId = nil
 	self._attackWindupEndsAt = 0
+	self._lastProgressPosition = homeWaypoint.position
+	self._lastProgressAt = os.clock()
+	self._ignoreTargetUntil = 0
 
 	local transitioned, reason = self:TransitionState("PATROL")
 	if not transitioned then
@@ -1028,6 +1041,9 @@ function MonsterService:StopEncounter()
 	self._patrolTargetWaypointId = nil
 	self._targetUserId = nil
 	self._lastKnownTargetPosition = nil
+	self._lastProgressPosition = nil
+	self._lastProgressAt = 0
+	self._ignoreTargetUntil = 0
 	self._state = "INACTIVE"
 	self._stateStartedAt = os.clock()
 end
@@ -1162,6 +1178,54 @@ function MonsterService:_stepChase(
 	self:_moveTowards(detection.position, MonsterConfig.CHASE_SPEED_STUDS_PER_SECOND, dtSeconds)
 end
 
+function MonsterService:_recoverFromStuck(now: number)
+	local lastProgressPosition = self._lastProgressPosition
+	if not lastProgressPosition then
+		self._lastProgressPosition = self._currentPosition
+		self._lastProgressAt = now
+		return
+	end
+
+	if (self._currentPosition - lastProgressPosition).Magnitude >= MonsterConfig.MOVEMENT_PROGRESS_THRESHOLD_STUDS then
+		self._lastProgressPosition = self._currentPosition
+		self._lastProgressAt = now
+		return
+	end
+
+	if now - self._lastProgressAt < MonsterConfig.MOVEMENT_STUCK_TIMEOUT_SECONDS then
+		return
+	end
+
+	-- Temporarily forget a blocked visual target and recover through a known waypoint/state.
+	self._lastProgressPosition = self._currentPosition
+	self._lastProgressAt = now
+	self._ignoreTargetUntil = now + MonsterConfig.TARGET_REACQUIRE_COOLDOWN_SECONDS
+	self:_setAttackTelegraph(false)
+	self._attackWindupUserId = nil
+	self._attackWindupEndsAt = 0
+
+	if self._state == "CHASE" then
+		self._searchOrigin = self._lastKnownTargetPosition or self._currentPosition
+		self:TransitionState("SEARCH", nil, self._searchOrigin)
+	elseif self._state == "INVESTIGATE" then
+		self._searchOrigin = self._investigationPosition or self._currentPosition
+		self:TransitionState("SEARCH", nil, self._searchOrigin)
+	elseif self._state == "SEARCH" then
+		self:TransitionState("RETURN")
+	elseif self._state == "RETURN" then
+		local nearest = self:FindNearestWaypoint(self._currentPosition)
+		self._patrolWaypointId = if nearest then nearest.id else MonsterConfig.HOME_WAYPOINT_ID
+		self._patrolTargetWaypointId = nil
+		self:TransitionState("PATROL")
+	else
+		local nearest = self:FindNearestWaypoint(self._currentPosition)
+		if nearest then
+			self._patrolWaypointId = nearest.id
+		end
+		self._patrolTargetWaypointId = nil
+	end
+end
+
 function MonsterService:StepAutonomousAI(dtSeconds: number): boolean
 	if not self:IsEncounterActive() then
 		return false
@@ -1174,7 +1238,13 @@ function MonsterService:StepAutonomousAI(dtSeconds: number): boolean
 	end
 
 	local safeDelta = math.clamp(dtSeconds, 0.05, 0.5)
+	local now = os.clock()
+	self:_recoverFromStuck(now)
 	local detection = self:DetectBestPlayerTarget(self._currentPosition, self._lookDirection)
+	if now < self._ignoreTargetUntil then
+		detection.detected = false
+		detection.userId = nil
+	end
 	if detection.detected and detection.userId and detection.position then
 		self:TransitionState("CHASE", detection.userId, detection.position)
 		self:_stepChase(detection, safeDelta)
