@@ -20,5 +20,7 @@
 
 1. **Autonomous Spawning & Patrol Loop for The Hollow (`Milestone 3`):**
    - Per project instructions, all server-side interfaces for **The Hollow** (`MonsterConfig.lua` and `MonsterService.lua`: detection, noise events, state management, station navigation, hiding locations, and player elimination) are prepared and verified, while spawning the active autonomous monster NPC is deferred until the mission-specific objective system is reviewed.
-2. **DataStore Persistence & Scrap Economy (`Milestone 4`):**
+2. **Flare Distraction Noise Emitter:**
+   - The Flare is currently an equipment/loadout item; there is no server-authoritative deploy/use action yet. No `FlareDistraction` noise is generated until a validated server-side flare deployment path exists. Do not expose a client-supplied position, radius, or intensity as a substitute.
+3. **DataStore Persistence & Scrap Economy (`Milestone 4`):**
    - Scheduled for **Milestone 4** per the build specification.
