@@ -1275,6 +1275,4 @@ function MonsterService:StepAutonomousAI(dtSeconds: number): boolean
 
 	return true
 end
-
-
 return MonsterService
