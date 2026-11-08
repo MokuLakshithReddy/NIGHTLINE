@@ -1334,6 +1334,14 @@ local completedFullTimer = RoundService:_waitPhaseOrAbort(180, true, "EXPLORATIO
 assert(completedFullTimer == false, "_waitPhaseOrAbort must immediately abort and return false when phase was terminated early")
 print("[LUAU VM PASS] Fix 4: All-crew-eliminated immediate round termination verified.")
 print("[LUAU VM PASS] Priority 3: Complete 10-stage round lifecycle verified end-to-end.")
+-- Regression coverage for objective completion vs extraction outcome.
+assert(RoundService:DetermineRoundOutcome(0, true) == "FAILED", "No extraction must fail even when the objective is complete")
+assert(RoundService:DetermineRoundOutcome(0, false) == "FAILED", "No extraction and incomplete objective must fail")
+assert(RoundService:DetermineRoundOutcome(1, true) == "SUCCESS", "Completed objective plus extraction must succeed")
+assert(RoundService:DetermineRoundOutcome(1, false) == "PARTIAL", "Extraction without objective completion must be partial")
+assert(RoundService:DetermineRoundOutcome(6, true) == "SUCCESS", "Full crew extraction with objective completion must succeed")
+assert(RoundService:DetermineRoundOutcome(2, false) == "PARTIAL", "Mixed crew extraction without objective completion must be partial")
+print("[LUAU VM PASS] Issue #1: objective/extraction result combinations verified.")
 print("ALL_LUAU_VM_TESTS_PASSED")
 `;
 
