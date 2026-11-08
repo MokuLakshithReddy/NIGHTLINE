@@ -617,6 +617,7 @@ ObjectiveService:Init({
 MonsterService:Init({
 	securityService = SecurityService,
 	hubService = HubService,
+	movementService = MovementService,
 })
 RoundService:Init({
 	remotes = remotes,
@@ -1304,6 +1305,9 @@ assert(detVisible.detected == true and detVisible.hasLineOfSight == true and det
 local okHide, hideReason = InteractionService:HandlePromptTriggered(hidingLocker2:FindFirstChildOfClass("ProximityPrompt"), p1)
 assert(okHide == true and hideReason == "EnteredHidingSpot", "P1 must enter hiding spot")
 assert(MonsterService:IsPlayerHidden(p1) == true, "MonsterService must report P1 as hidden")
+assert(p1.Character.HumanoidRootPart.Anchored == true, "Hidden player root must be server-anchored inside the locker")
+assert((p1.Character.HumanoidRootPart.Position - Vector3.new(34, 3.5, -34)).Magnitude <= 0.01, "Hidden player must be moved into the locker interior")
+assert(p1.Character.Humanoid.WalkSpeed == 0, "Hidden player must have movement disabled")
 
 local detHidden = MonsterService:EvaluatePlayerDetection(
 	Vector3.new(47, 3.75, -30),
@@ -1328,6 +1332,9 @@ advanceVirtualClock(1.0)
 local okUnhide, unhideReason = InteractionService:HandlePromptTriggered(hidingLocker2:FindFirstChildOfClass("ProximityPrompt"), p1)
 assert(okUnhide == true and unhideReason == "ExitedHidingSpot", "P1 must exit hiding spot")
 assert(MonsterService:IsPlayerHidden(p1) == false, "P1 must no longer be hidden after exiting")
+assert(p1.Character.HumanoidRootPart.Anchored == false, "Exiting must restore the character's original anchored state")
+assert(p1.Character.Humanoid.WalkSpeed == GameConfig.WALK_SPEED, "Exiting must restore the character's original walk speed")
+assert((p1.Character.HumanoidRootPart.Position - Vector3.new(34, 3.5, -30)).Magnitude <= 0.01, "Exiting must place the character at the configured safe exit position")
 
 -- Attacking through a solid wall must be rejected (BlockedByWall)
 -- ConcourseWall_EastNorth is at X = 65.5, Z = -24 (spanning Z = -42..-6); ControlRoomFloor spans Z = -18..+18.

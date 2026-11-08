@@ -842,21 +842,80 @@ function HubService:BuildStation001Environment(): Model
 		self._stationObjectivePartsByName[nodeSpec.name] = nodePart
 	end
 
-	-- 11. Priority 4: Station 001 Hiding Locations (for The Hollow AI preparation)
+	-- 11. Station 001 hiding lockers: real enclosures with a movable/solid front door.
 	for _, hideSpec in ipairs(MonsterConfig.Station001HidingSpots) do
+		local center = hideSpec.position
 		local hidePart = createPart({
 			name = hideSpec.id,
-			size = Vector3.new(3.2, 6.5, 3.2),
-			cframe = CFrame.new(hideSpec.position),
+			size = Vector3.new(1, 1, 1),
+			cframe = CFrame.new(center),
 			color = Color3.fromRGB(51, 65, 85),
 			material = Enum.Material.Metal,
-			canCollide = true,
+			transparency = 1,
+			canCollide = false,
 			parent = stationModel,
 		})
 		CollectionService:AddTag(hidePart, GameConfig.Tags.HidingSpot)
 		hidePart:SetAttribute("HidingSpotId", hideSpec.id)
 		hidePart:SetAttribute("RoomId", hideSpec.roomId)
 		hidePart:SetAttribute("OccupiedByUserId", 0)
+
+		local shellParts = {
+			createPart({
+				name = hideSpec.id .. "_LeftWall",
+				size = Vector3.new(0.16, 6.1, 3.0),
+				cframe = CFrame.new(center + Vector3.new(-1.52, 0, 0)),
+				color = Color3.fromRGB(51, 65, 85),
+				material = Enum.Material.Metal,
+				parent = stationModel,
+			}),
+			createPart({
+				name = hideSpec.id .. "_RightWall",
+				size = Vector3.new(0.16, 6.1, 3.0),
+				cframe = CFrame.new(center + Vector3.new(1.52, 0, 0)),
+				color = Color3.fromRGB(51, 65, 85),
+				material = Enum.Material.Metal,
+				parent = stationModel,
+			}),
+			createPart({
+				name = hideSpec.id .. "_BackWall",
+				size = Vector3.new(3.0, 6.1, 0.16),
+				cframe = CFrame.new(center + Vector3.new(0, 0, -1.52)),
+				color = Color3.fromRGB(51, 65, 85),
+				material = Enum.Material.Metal,
+				parent = stationModel,
+			}),
+			createPart({
+				name = hideSpec.id .. "_Top",
+				size = Vector3.new(3.0, 0.16, 3.0),
+				cframe = CFrame.new(center + Vector3.new(0, 3.08, 0)),
+				color = Color3.fromRGB(51, 65, 85),
+				material = Enum.Material.Metal,
+				parent = stationModel,
+			}),
+			createPart({
+				name = hideSpec.id .. "_Floor",
+				size = Vector3.new(3.0, 0.16, 3.0),
+				cframe = CFrame.new(center + Vector3.new(0, -3.08, 0)),
+				color = Color3.fromRGB(51, 65, 85),
+				material = Enum.Material.Metal,
+				parent = stationModel,
+			}),
+		}
+		for _, shellPart in ipairs(shellParts) do
+			table.insert(self._collidableWallParts, shellPart)
+		end
+
+		local lockerDoor = createPart({
+			name = "LockerDoor",
+			size = Vector3.new(3.0, 6.1, 0.16),
+			cframe = CFrame.new(center + Vector3.new(0, 0, 1.52)),
+			color = Color3.fromRGB(30, 41, 59),
+			material = Enum.Material.DiamondPlate,
+			canCollide = true,
+			parent = hidePart,
+		})
+		table.insert(self._collidableWallParts, lockerDoor)
 
 		local hidePrompt = Instance.new("ProximityPrompt")
 		hidePrompt.Name = "HidingSpotPrompt_" .. hideSpec.id
