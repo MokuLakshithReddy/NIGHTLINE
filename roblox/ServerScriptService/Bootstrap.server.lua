@@ -59,6 +59,7 @@ local function bootstrapServer()
 	MonsterService:Init({
 		securityService = SecurityService,
 		hubService = HubService,
+		movementService = MovementService,
 	})
 
 	RoundService:Init({
