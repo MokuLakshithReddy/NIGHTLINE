@@ -1227,7 +1227,8 @@ function MonsterService:StepAutonomousAI(dtSeconds: number): boolean
 			)
 			if
 				reached
-				or os.clock() - self._stateStartedAt >= MonsterConfig.INVESTIGATE_TIMEOUT_SECONDS
+				or os.clock() - self._stateStartedAt
+					>= MonsterConfig.INVESTIGATE_TIMEOUT_SECONDS
 			then
 				self._searchOrigin = target
 				self:TransitionState("SEARCH", nil, target)
