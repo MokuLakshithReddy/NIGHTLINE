@@ -1217,8 +1217,16 @@ print("[LUAU VM PASS] Priority 1 & 3 (RepairSignal): 3 communication terminals, 
 -- (State management, Noise events, Station navigation, Hiding locations,
 --  Player detection, and Validated player elimination)
 -- ----------------------------------------------------------------------------
--- 7A: Monster State Management
-assert(MonsterService:GetState() == "INACTIVE", "MonsterService must default to INACTIVE")
+-- 7A: The Hollow is spawned by the authoritative expedition lifecycle.
+assert(MonsterService:IsEncounterActive() == true, "Hollow encounter must start when Station 001 exploration begins")
+assert(MonsterService:GetState() == "PATROL", "Hollow must begin in PATROL")
+local spawnedHollow = MonsterService:GetNpcModel()
+assert(spawnedHollow ~= nil and spawnedHollow.Parent == HubService:GetActiveStationModel(), "Hollow rig must be parented to the active Station 001 model")
+assert(spawnedHollow:FindFirstChild("HumanoidRootPart") ~= nil, "Hollow rig must expose a root part")
+assert(spawnedHollow:FindFirstChildOfClass("Humanoid") ~= nil, "Hollow rig must expose a Humanoid")
+local hollowStartPosition = MonsterService:GetCurrentPosition()
+assert(MonsterService:StepAutonomousAI(0.2) == true, "A bounded AI decision step must run during exploration")
+assert(MonsterService:IsEncounterActive() == true, "Single AI step must not terminate the encounter")
 local okTrans1 = MonsterService:TransitionState("PATROL")
 assert(okTrans1 == true and MonsterService:GetState() == "PATROL", "Must transition INACTIVE -> PATROL")
 local okInvalidTrans = MonsterService:TransitionState("SEARCH")
@@ -1350,6 +1358,12 @@ assert(RoundService:GetPlayerStatus(p1) == "ELIMINATED", "P1 must be marked ELIM
 local okCooldownHit, cooldownReason = MonsterService:CanEliminateTarget(Vector3.new(38, 3.75, -30), p4)
 assert(okCooldownHit == false and cooldownReason == "AttackCooldownActive", "Immediate repeat attack within cooldown window must be rejected")
 print("[LUAU VM PASS] Priority 4: Prepared Hollow AI interfaces (detection, noise, state machine, waypoints, hiding spots, elimination) verified.")
+
+-- Encounter lifecycle cleanup: no NPC or AI controller may survive round reset.
+MonsterService:StopEncounter()
+assert(MonsterService:IsEncounterActive() == false, "StopEncounter must deactivate the Hollow")
+assert(MonsterService:GetNpcModel() == nil, "StopEncounter must destroy the spawned Hollow rig")
+assert(MonsterService:GetState() == "INACTIVE", "StopEncounter must return the Hollow state to INACTIVE")
 
 -- ----------------------------------------------------------------------------
 -- TEST 8 (Fix 4 & Stage 9): All-Crew-Eliminated Immediate Round Termination

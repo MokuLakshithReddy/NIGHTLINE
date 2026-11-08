@@ -42,6 +42,23 @@ local MonsterService: { [string]: any } = {
 	_hubService = nil :: any,
 	_roundService = nil :: any,
 	_movementService = nil :: any,
+
+	-- One server-owned encounter and one bounded AI coroutine per expedition.
+	_encounterActive = false,
+	_aiThread = nil :: thread?,
+	_npcModel = nil :: Model?,
+	_stateStartedAt = 0,
+	_lastInvestigatedNoiseId = nil :: number?,
+	_investigationPosition = nil :: Vector3?,
+	_searchOrigin = nil :: Vector3?,
+	_patrolWaypointId = nil :: string?,
+	_patrolTargetWaypointId = nil :: string?,
+	_patrolNeighborCursor = 0,
+	_attackWindupUserId = nil :: number?,
+	_attackWindupEndsAt = 0,
+	_lastProgressPosition = nil :: Vector3?,
+	_lastProgressAt = 0,
+	_ignoreTargetUntil = 0,
 }
 
 function MonsterService:Init(dependencies: {
@@ -68,12 +85,22 @@ function MonsterService:Start()
 end
 
 function MonsterService:ResetForRound()
+	self:StopEncounter()
 	self._state = "INACTIVE"
 	self._currentPosition = Vector3.new(47, 3.75, 0)
 	self._lookDirection = Vector3.new(0, 0, -1)
 	self._targetUserId = nil
 	self._lastKnownTargetPosition = nil
 	self._lastAttackClock = -999
+	self._stateStartedAt = os.clock()
+	self._lastInvestigatedNoiseId = nil
+	self._investigationPosition = nil
+	self._searchOrigin = nil
+	self._patrolWaypointId = nil
+	self._patrolTargetWaypointId = nil
+	self._patrolNeighborCursor = 0
+	self._attackWindupUserId = nil
+	self._attackWindupEndsAt = 0
 	table.clear(self._noiseEvents)
 
 	local hiddenUserIds = {}
@@ -107,6 +134,19 @@ function MonsterService:SetTransform(position: Vector3, lookDirection: Vector3?)
 	if lookDirection and lookDirection.Magnitude > 0.001 then
 		self._lookDirection = lookDirection * (1 / lookDirection.Magnitude)
 	end
+	local npcModel = self._npcModel
+	if npcModel and npcModel.Parent then
+		npcModel:PivotTo(CFrame.new(position))
+	end
+	local lastProgressPosition = self._lastProgressPosition
+	if
+		not lastProgressPosition
+		or (position - lastProgressPosition).Magnitude
+			>= MonsterConfig.MOVEMENT_PROGRESS_THRESHOLD_STUDS
+	then
+		self._lastProgressPosition = position
+		self._lastProgressAt = os.clock()
+	end
 end
 
 function MonsterService:GetTargetUserId(): number?
@@ -133,22 +173,39 @@ function MonsterService:TransitionState(
 	targetUserId: number?,
 	targetPosition: Vector3?
 ): (boolean, string)
-	if not self:CanTransitionState(self._state, newState) then
-		return false, "InvalidStateTransition"
-	end
-
-	self._state = newState
-	if newState == "INACTIVE" or newState == "PATROL" or newState == "RETURN" then
-		self._targetUserId = nil
-	else
+	if self._state == newState then
 		if targetUserId ~= nil then
 			self._targetUserId = targetUserId
 		end
 		if targetPosition ~= nil then
 			self._lastKnownTargetPosition = targetPosition
 		end
+		return true, "StateRefreshed"
 	end
 
+	if not self:CanTransitionState(self._state, newState) then
+		return false, "InvalidStateTransition"
+	end
+
+	self._state = newState
+	self._stateStartedAt = os.clock()
+	if newState == "INACTIVE" or newState == "PATROL" or newState == "RETURN" then
+		self._targetUserId = nil
+	else
+		if targetUserId ~= nil then
+			self._targetUserId = targetUserId
+		elseif newState == "INVESTIGATE" or newState == "SEARCH" then
+			self._targetUserId = nil
+		end
+		if targetPosition ~= nil then
+			self._lastKnownTargetPosition = targetPosition
+		end
+	end
+
+	local npcModel = self._npcModel
+	if npcModel and npcModel.Parent then
+		npcModel:SetAttribute("HollowState", newState)
+	end
 	return true, "StateTransitioned"
 end
 
@@ -795,4 +852,540 @@ function MonsterService:ExecuteValidatedElimination(
 	return self._roundService:EliminatePlayer(targetPlayer, reason or "TheHollow", true)
 end
 
+-- ============================================================================
+-- 7. Autonomous Hollow Encounter Runtime
+-- ============================================================================
+local function createHollowPart(
+	model: Model,
+	name: string,
+	size: Vector3,
+	position: Vector3,
+	color: Color3,
+	material: Enum.Material,
+	transparency: number?
+): Part
+	local part = Instance.new("Part")
+	part.Name = name
+	part.Size = size
+	part.CFrame = CFrame.new(position)
+	part.Color = color
+	part.Material = material
+	part.Transparency = transparency or 0
+	part.Anchored = true
+	part.CanCollide = false
+	part.Parent = model
+	return part
+end
+
+function MonsterService:_buildHollowRig(spawnPosition: Vector3): Model
+	local stationModel = if self._hubService then self._hubService:GetActiveStationModel() else nil
+	assert(stationModel and stationModel.Parent, "The Hollow requires an active Station 001 model")
+
+	local model = Instance.new("Model")
+	model.Name = MonsterConfig.NPC_MODEL_NAME
+	model:SetAttribute("MonsterId", MonsterConfig.MONSTER_ID)
+	model:SetAttribute("HollowState", "PATROL")
+	model:SetAttribute("ServerAuthoritative", true)
+	model.Parent = stationModel
+
+	local shell = Color3.fromRGB(18, 21, 28)
+	local edge = Color3.fromRGB(43, 50, 62)
+	local eyes = Color3.fromRGB(255, 74, 54)
+	local root = createHollowPart(
+		model,
+		"HumanoidRootPart",
+		Vector3.new(1.4, 4.8, 1.2),
+		spawnPosition,
+		shell,
+		Enum.Material.Metal,
+		1
+	)
+	model.PrimaryPart = root
+
+	createHollowPart(
+		model,
+		"Torso",
+		Vector3.new(2.0, 2.35, 1.15),
+		spawnPosition + Vector3.new(0, 0.85, 0),
+		shell,
+		Enum.Material.Metal
+	)
+	createHollowPart(
+		model,
+		"Head",
+		Vector3.new(1.25, 1.35, 1.1),
+		spawnPosition + Vector3.new(0, 2.55, 0),
+		edge,
+		Enum.Material.Metal
+	)
+	createHollowPart(
+		model,
+		"LeftArm",
+		Vector3.new(0.48, 2.45, 0.55),
+		spawnPosition + Vector3.new(-1.18, 0.72, 0),
+		shell,
+		Enum.Material.Metal
+	)
+	createHollowPart(
+		model,
+		"RightArm",
+		Vector3.new(0.48, 2.45, 0.55),
+		spawnPosition + Vector3.new(1.18, 0.72, 0),
+		shell,
+		Enum.Material.Metal
+	)
+	createHollowPart(
+		model,
+		"LeftLeg",
+		Vector3.new(0.68, 2.15, 0.72),
+		spawnPosition + Vector3.new(-0.52, -1.42, 0),
+		shell,
+		Enum.Material.Metal
+	)
+	createHollowPart(
+		model,
+		"RightLeg",
+		Vector3.new(0.68, 2.15, 0.72),
+		spawnPosition + Vector3.new(0.52, -1.42, 0),
+		shell,
+		Enum.Material.Metal
+	)
+	createHollowPart(
+		model,
+		"LeftEye",
+		Vector3.new(0.16, 0.12, 0.08),
+		spawnPosition + Vector3.new(-0.27, 2.66, -0.57),
+		eyes,
+		Enum.Material.Neon
+	)
+	createHollowPart(
+		model,
+		"RightEye",
+		Vector3.new(0.16, 0.12, 0.08),
+		spawnPosition + Vector3.new(0.27, 2.66, -0.57),
+		eyes,
+		Enum.Material.Neon
+	)
+	createHollowPart(
+		model,
+		"AttackTelegraph",
+		Vector3.new(0.72, 0.72, 0.72),
+		spawnPosition + Vector3.new(0, 1.0, -0.8),
+		eyes,
+		Enum.Material.Neon,
+		1
+	)
+
+	local humanoid = Instance.new("Humanoid")
+	humanoid.Name = "Humanoid"
+	humanoid.DisplayName = MonsterConfig.DISPLAY_NAME
+	humanoid.MaxHealth = 100
+	humanoid.Health = 100
+	humanoid.WalkSpeed = MonsterConfig.CHASE_SPEED_STUDS_PER_SECOND
+	humanoid.AutoRotate = false
+	humanoid.Parent = model
+
+	model:PivotTo(CFrame.new(spawnPosition))
+	return model
+end
+
+function MonsterService:GetNpcModel(): Model?
+	return self._npcModel
+end
+
+function MonsterService:IsEncounterActive(): boolean
+	return self._encounterActive and self._npcModel ~= nil and self._npcModel.Parent ~= nil
+end
+
+function MonsterService:_setAttackTelegraph(isVisible: boolean)
+	local model = self._npcModel
+	local telegraph = if model then model:FindFirstChild("AttackTelegraph") else nil
+	if telegraph and telegraph:IsA("BasePart") then
+		telegraph.Transparency = if isVisible then 0.05 else 1
+	end
+end
+
+function MonsterService:StartEncounter(): (boolean, string)
+	if self._encounterActive then
+		return true, "AlreadyActive"
+	end
+
+	local roundService = self._roundService
+	if not roundService or roundService:GetState() ~= "EXPLORATION" then
+		return false, "InvalidEncounterPhase"
+	end
+
+	local graph = self:GetStationNavigationGraph()
+	local homeWaypoint = graph[MonsterConfig.HOME_WAYPOINT_ID]
+	if not homeWaypoint then
+		return false, "MissingHomeWaypoint"
+	end
+
+	self._currentPosition = homeWaypoint.position
+	self._lookDirection = Vector3.new(0, 0, -1)
+	self._npcModel = self:_buildHollowRig(homeWaypoint.position)
+	self._encounterActive = true
+	self._patrolWaypointId = homeWaypoint.id
+	self._patrolTargetWaypointId = nil
+	self._patrolNeighborCursor = 0
+	self._lastInvestigatedNoiseId = nil
+	self._attackWindupUserId = nil
+	self._attackWindupEndsAt = 0
+	self._lastProgressPosition = homeWaypoint.position
+	self._lastProgressAt = os.clock()
+	self._ignoreTargetUntil = 0
+
+	local transitioned, reason = self:TransitionState("PATROL")
+	if not transitioned then
+		self:StopEncounter()
+		return false, reason
+	end
+
+	self._aiThread = task.spawn(function()
+		local previousTick = os.clock()
+		while self._encounterActive do
+			task.wait(MonsterConfig.AI_UPDATE_INTERVAL_SECONDS)
+			local now = os.clock()
+			local dtSeconds = math.clamp(now - previousTick, 0.05, 0.5)
+			previousTick = now
+			local ok, err = pcall(function()
+				self:StepAutonomousAI(dtSeconds)
+			end)
+			if not ok then
+				warn("[MonsterService] Hollow AI step failed:", err)
+			end
+		end
+	end)
+
+	return true, "EncounterStarted"
+end
+
+function MonsterService:StopEncounter()
+	self._encounterActive = false
+	local aiThread = self._aiThread
+	self._aiThread = nil
+	if aiThread then
+		pcall(task.cancel, aiThread)
+	end
+
+	local npcModel = self._npcModel
+	self._npcModel = nil
+	if npcModel and npcModel.Parent then
+		npcModel:Destroy()
+	end
+
+	self._attackWindupUserId = nil
+	self._attackWindupEndsAt = 0
+	self._investigationPosition = nil
+	self._searchOrigin = nil
+	self._patrolTargetWaypointId = nil
+	self._targetUserId = nil
+	self._lastKnownTargetPosition = nil
+	self._lastProgressPosition = nil
+	self._lastProgressAt = 0
+	self._ignoreTargetUntil = 0
+	self._state = "INACTIVE"
+	self._stateStartedAt = os.clock()
+end
+
+function MonsterService:_findPlayerByUserId(userId: number): Player?
+	for _, player in ipairs(Players:GetPlayers()) do
+		if player.UserId == userId then
+			return player
+		end
+	end
+	return nil
+end
+
+function MonsterService:_moveTowards(
+	targetPosition: Vector3,
+	speed: number,
+	dtSeconds: number
+): boolean
+	local currentPosition = self._currentPosition
+	local destination = Vector3.new(targetPosition.X, currentPosition.Y, targetPosition.Z)
+	local directPathAllowed = true
+
+	if self._hubService then
+		directPathAllowed = self._hubService:IsPathWalkable(currentPosition, destination, 0.8)
+	end
+
+	if not directPathAllowed then
+		local fromWaypoint = self:FindNearestWaypoint(currentPosition)
+		local toWaypoint = self:FindNearestWaypoint(destination)
+		if not fromWaypoint or not toWaypoint then
+			return false
+		end
+		local route = self:ComputeWaypointRoute(fromWaypoint.id, toWaypoint.id)
+		if #route < 2 then
+			return false
+		end
+		destination = Vector3.new(route[2].position.X, currentPosition.Y, route[2].position.Z)
+	end
+
+	local delta = destination - currentPosition
+	local distance = delta.Magnitude
+	if distance <= MonsterConfig.WAYPOINT_REACHED_DISTANCE then
+		return true
+	end
+
+	local direction = delta * (1 / math.max(distance, 0.001))
+	local stepDistance = math.min(distance, speed * dtSeconds)
+	local candidate = currentPosition + direction * stepDistance
+
+	if self._hubService then
+		if
+			not self._hubService:IsPositionSupportedByFloor(candidate)
+			or not self._hubService:IsPathWalkable(currentPosition, candidate, 0.5)
+		then
+			return false
+		end
+	end
+
+	self:SetTransform(candidate, direction)
+	return distance - stepDistance <= MonsterConfig.WAYPOINT_REACHED_DISTANCE
+end
+
+function MonsterService:_choosePatrolTarget(): NetworkTypes.StationWaypoint?
+	local graph = self:GetStationNavigationGraph()
+	local currentWaypoint = if self._patrolWaypointId then graph[self._patrolWaypointId] else nil
+	if not currentWaypoint or #currentWaypoint.neighbors == 0 then
+		currentWaypoint = self:FindNearestWaypoint(self._currentPosition)
+	end
+	if not currentWaypoint or #currentWaypoint.neighbors == 0 then
+		return nil
+	end
+
+	self._patrolNeighborCursor = (self._patrolNeighborCursor % #currentWaypoint.neighbors) + 1
+	local targetId = currentWaypoint.neighbors[self._patrolNeighborCursor]
+	return graph[targetId]
+end
+
+function MonsterService:_stepChase(
+	detection: NetworkTypes.PlayerDetectionSnapshot,
+	dtSeconds: number
+)
+	local targetUserId = detection.userId
+	local targetPlayer = if targetUserId then self:_findPlayerByUserId(targetUserId) else nil
+	if not targetPlayer or not detection.position then
+		self:_setAttackTelegraph(false)
+		self._attackWindupUserId = nil
+		self._attackWindupEndsAt = 0
+		self:TransitionState("SEARCH", nil, self._lastKnownTargetPosition)
+		self._searchOrigin = self._lastKnownTargetPosition or self._currentPosition
+		return
+	end
+
+	self._lastKnownTargetPosition = detection.position
+	local distance = (detection.position - self._currentPosition).Magnitude
+	if
+		distance <= MonsterConfig.ATTACK_RANGE_STUDS
+		and self:HasLineOfSight(self._currentPosition, detection.position)
+	then
+		local now = os.clock()
+		if self._attackWindupUserId ~= targetPlayer.UserId then
+			self._attackWindupUserId = targetPlayer.UserId
+			self._attackWindupEndsAt = now + MonsterConfig.ATTACK_TELEGRAPH_SECONDS
+			self:_setAttackTelegraph(true)
+			if self._roundService then
+				self._roundService:SendNotificationToPlayer(
+					targetPlayer,
+					"HollowAttackTelegraph",
+					"The Hollow is closing in! Break line of sight or hide now!",
+					"Danger"
+				)
+			end
+			return
+		end
+
+		if now >= self._attackWindupEndsAt then
+			local eliminated =
+				self:ExecuteValidatedElimination(self._currentPosition, targetPlayer, "TheHollow")
+			self:_setAttackTelegraph(false)
+			self._attackWindupUserId = nil
+			self._attackWindupEndsAt = 0
+			if eliminated then
+				self:TransitionState("SEARCH", nil, detection.position)
+				self._searchOrigin = detection.position
+			end
+		end
+		return
+	end
+
+	self:_setAttackTelegraph(false)
+	self._attackWindupUserId = nil
+	self._attackWindupEndsAt = 0
+	self:_moveTowards(detection.position, MonsterConfig.CHASE_SPEED_STUDS_PER_SECOND, dtSeconds)
+end
+
+function MonsterService:_recoverFromStuck(now: number)
+	local lastProgressPosition = self._lastProgressPosition
+	if not lastProgressPosition then
+		self._lastProgressPosition = self._currentPosition
+		self._lastProgressAt = now
+		return
+	end
+
+	if
+		(self._currentPosition - lastProgressPosition).Magnitude
+		>= MonsterConfig.MOVEMENT_PROGRESS_THRESHOLD_STUDS
+	then
+		self._lastProgressPosition = self._currentPosition
+		self._lastProgressAt = now
+		return
+	end
+
+	if now - self._lastProgressAt < MonsterConfig.MOVEMENT_STUCK_TIMEOUT_SECONDS then
+		return
+	end
+
+	-- Temporarily forget a blocked visual target and recover through a known waypoint/state.
+	self._lastProgressPosition = self._currentPosition
+	self._lastProgressAt = now
+	self._ignoreTargetUntil = now + MonsterConfig.TARGET_REACQUIRE_COOLDOWN_SECONDS
+	self:_setAttackTelegraph(false)
+	self._attackWindupUserId = nil
+	self._attackWindupEndsAt = 0
+
+	if self._state == "CHASE" then
+		self._searchOrigin = self._lastKnownTargetPosition or self._currentPosition
+		self:TransitionState("SEARCH", nil, self._searchOrigin)
+	elseif self._state == "INVESTIGATE" then
+		self._searchOrigin = self._investigationPosition or self._currentPosition
+		self:TransitionState("SEARCH", nil, self._searchOrigin)
+	elseif self._state == "SEARCH" then
+		self:TransitionState("RETURN")
+	elseif self._state == "RETURN" then
+		local nearest = self:FindNearestWaypoint(self._currentPosition)
+		self._patrolWaypointId = if nearest then nearest.id else MonsterConfig.HOME_WAYPOINT_ID
+		self._patrolTargetWaypointId = nil
+		self:TransitionState("PATROL")
+	else
+		local nearest = self:FindNearestWaypoint(self._currentPosition)
+		if nearest then
+			self._patrolWaypointId = nearest.id
+		end
+		self._patrolTargetWaypointId = nil
+	end
+end
+
+function MonsterService:StepAutonomousAI(dtSeconds: number): boolean
+	if not self:IsEncounterActive() then
+		return false
+	end
+	if self._roundService then
+		local phase = self._roundService:GetState()
+		if phase ~= "EXPLORATION" and phase ~= "EXTRACTION" then
+			return false
+		end
+	end
+
+	local safeDelta = math.clamp(dtSeconds, 0.05, 0.5)
+	local now = os.clock()
+	self:_recoverFromStuck(now)
+	local detection = self:DetectBestPlayerTarget(self._currentPosition, self._lookDirection)
+	if now < self._ignoreTargetUntil then
+		detection.detected = false
+		detection.userId = nil
+	end
+	if detection.detected and detection.userId and detection.position then
+		self:TransitionState("CHASE", detection.userId, detection.position)
+		self:_stepChase(detection, safeDelta)
+		return true
+	end
+
+	if self._state == "CHASE" then
+		self:_setAttackTelegraph(false)
+		self._attackWindupUserId = nil
+		self._attackWindupEndsAt = 0
+		self:TransitionState("SEARCH", nil, self._lastKnownTargetPosition)
+		self._searchOrigin = self._lastKnownTargetPosition or self._currentPosition
+	end
+
+	local strongestNoise = self:SelectStrongestNoiseStimulus(self._currentPosition)
+	if strongestNoise and strongestNoise.id ~= self._lastInvestigatedNoiseId then
+		self._lastInvestigatedNoiseId = strongestNoise.id
+		self._investigationPosition = strongestNoise.position
+		self:TransitionState("INVESTIGATE", nil, strongestNoise.position)
+	end
+
+	if self._state == "PATROL" then
+		if not self._patrolTargetWaypointId then
+			local nextWaypoint = self:_choosePatrolTarget()
+			if nextWaypoint then
+				self._patrolTargetWaypointId = nextWaypoint.id
+			end
+		end
+		local targetWaypoint = if self._patrolTargetWaypointId
+			then self:GetStationNavigationGraph()[self._patrolTargetWaypointId]
+			else nil
+		if
+			targetWaypoint
+			and self:_moveTowards(
+				targetWaypoint.position,
+				MonsterConfig.PATROL_SPEED_STUDS_PER_SECOND,
+				safeDelta
+			)
+		then
+			self._patrolWaypointId = targetWaypoint.id
+			self._patrolTargetWaypointId = nil
+		end
+	elseif self._state == "INVESTIGATE" then
+		local target = self._investigationPosition or self._lastKnownTargetPosition
+		if target then
+			local reached = self:_moveTowards(
+				target,
+				MonsterConfig.INVESTIGATE_SPEED_STUDS_PER_SECOND,
+				safeDelta
+			)
+			if
+				reached
+				or os.clock() - self._stateStartedAt
+					>= MonsterConfig.INVESTIGATE_TIMEOUT_SECONDS
+			then
+				self._searchOrigin = target
+				self:TransitionState("SEARCH", nil, target)
+			end
+		end
+	elseif self._state == "SEARCH" then
+		local origin = self._searchOrigin or self._lastKnownTargetPosition or self._currentPosition
+		local elapsed = os.clock() - self._stateStartedAt
+		if elapsed >= MonsterConfig.SEARCH_TIMEOUT_SECONDS then
+			self:TransitionState("RETURN")
+		elseif elapsed >= MonsterConfig.SEARCH_SWEEP_INTERVAL_SECONDS then
+			local sweepTime = elapsed * 0.8
+			local offset = Vector3.new(
+				math.cos(sweepTime) * MonsterConfig.SEARCH_SWEEP_RADIUS,
+				0,
+				math.sin(sweepTime) * MonsterConfig.SEARCH_SWEEP_RADIUS
+			)
+			self:_moveTowards(
+				origin + offset,
+				MonsterConfig.SEARCH_SPEED_STUDS_PER_SECOND,
+				safeDelta
+			)
+			self:SetTransform(
+				self._currentPosition,
+				Vector3.new(math.cos(sweepTime), 0, math.sin(sweepTime))
+			)
+		end
+	elseif self._state == "RETURN" then
+		local home = self:GetStationNavigationGraph()[MonsterConfig.HOME_WAYPOINT_ID]
+		if
+			home
+			and self:_moveTowards(
+				home.position,
+				MonsterConfig.RETURN_SPEED_STUDS_PER_SECOND,
+				safeDelta
+			)
+		then
+			self._patrolWaypointId = home.id
+			self._patrolTargetWaypointId = nil
+			self._investigationPosition = nil
+			self:TransitionState("PATROL")
+		end
+	end
+
+	return true
+end
 return MonsterService
