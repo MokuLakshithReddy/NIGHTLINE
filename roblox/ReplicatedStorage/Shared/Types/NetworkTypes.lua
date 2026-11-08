@@ -24,7 +24,7 @@ export type PlayerRoundStatus =
 	| "ELIMINATED"
 	| "DISCONNECTED"
 
-export type RoundOutcome = "PENDING" | "SUCCESS" | "FAILED"
+export type RoundOutcome = "PENDING" | "SUCCESS" | "PARTIAL" | "FAILED"
 
 export type StationId = "Station001"
 
