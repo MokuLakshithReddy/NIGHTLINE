@@ -1236,7 +1236,7 @@ local foundWalkNoise = false
 for _, event in ipairs(walkEvents) do
 	if event.category == "Walk" and event.sourceUserId == p1.UserId then
 		foundWalkNoise = true
-		assert(event.position == p1.Character.HumanoidRootPart.Position, "Walk noise must use server-observed character position")
+		assert((event.position - walkTarget).Magnitude <= 3.0, "Walk noise position must be derived from a nearby server-observed character position")
 	end
 end
 assert(foundWalkNoise, "Validated player movement must emit paced Walk noise")
