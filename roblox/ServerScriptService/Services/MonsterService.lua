@@ -36,20 +36,24 @@ local MonsterService: { [string]: any } = {
 	-- Hiding spot state: userId -> hidingSpotId and hidingSpotId -> userId
 	_playerHidingSpot = {} :: { [number]: string },
 	_hidingSpotOccupant = {} :: { [string]: number },
+	_hidingSnapshots = {} :: { [number]: any },
 
 	_securityService = nil :: any,
 	_hubService = nil :: any,
 	_roundService = nil :: any,
+	_movementService = nil :: any,
 }
 
 function MonsterService:Init(dependencies: {
 	securityService: any,
 	hubService: any,
 	roundService: any?,
+	movementService: any?,
 })
 	self._securityService = dependencies.securityService
 	self._hubService = dependencies.hubService
 	self._roundService = dependencies.roundService
+	self._movementService = dependencies.movementService
 	self:ResetForRound()
 end
 
@@ -72,11 +76,19 @@ function MonsterService:ResetForRound()
 	self._lastAttackClock = -999
 	table.clear(self._noiseEvents)
 
+	local hiddenUserIds = {}
+	for userId in pairs(self._playerHidingSpot) do
+		table.insert(hiddenUserIds, userId)
+	end
+	for _, userId in ipairs(hiddenUserIds) do
+		self:ClearPlayerHidingState(userId)
+	end
 	for hidingSpotId in pairs(self._hidingSpotOccupant) do
 		self:_updateHidingSpotPartAttributes(hidingSpotId, nil)
 	end
 	table.clear(self._playerHidingSpot)
 	table.clear(self._hidingSpotOccupant)
+	table.clear(self._hidingSnapshots)
 end
 
 -- ============================================================================
@@ -212,23 +224,90 @@ end
 -- ============================================================================
 -- 3. Hiding Locations Interface
 -- ============================================================================
+function MonsterService:_getHidingSpotConfig(spotId: string): any
+	for _, spec in ipairs(MonsterConfig.Station001HidingSpots) do
+		if spec.id == spotId then
+			return spec
+		end
+	end
+	return nil
+end
+
 function MonsterService:IsPlayerHidden(player: Player): boolean
-	return self._playerHidingSpot[player.UserId] ~= nil
+	local userId = player.UserId
+	local spotId = self._playerHidingSpot[userId]
+	local snapshot = self._hidingSnapshots[userId]
+	if not spotId or not snapshot then
+		return false
+	end
+
+	local rootPart = snapshot.rootPart
+	local humanoid = snapshot.humanoid
+	local physicallyInside = rootPart.Parent ~= nil
+		and humanoid.Parent ~= nil
+		and humanoid.Health > 0
+		and rootPart.Anchored == true
+		and (rootPart.Position - snapshot.insidePosition).Magnitude <= 1.25
+
+	if not physicallyInside then
+		self:ClearPlayerHidingState(userId)
+		return false
+	end
+	return true
 end
 
 function MonsterService:GetPlayerHidingSpotId(player: Player): string?
+	if not self:IsPlayerHidden(player) then
+		return nil
+	end
 	return self._playerHidingSpot[player.UserId]
 end
 
 function MonsterService:ClearPlayerHidingState(userId: number)
 	local spotId = self._playerHidingSpot[userId]
-	if spotId then
-		if self._hidingSpotOccupant[spotId] == userId then
-			self._hidingSpotOccupant[spotId] = nil
+	local snapshot = self._hidingSnapshots[userId]
+	local hidingPart: BasePart? = if spotId and self._hubService
+		then self._hubService:GetHidingSpotPartById(spotId)
+		else nil
+	local door = if hidingPart then hidingPart:FindFirstChild("LockerDoor") else nil
+
+	if door and door:IsA("BasePart") then
+		door.CanCollide = false
+	end
+
+	if snapshot then
+		local rootPart = snapshot.rootPart
+		local humanoid = snapshot.humanoid
+		if rootPart.Parent then
+			if humanoid.Parent then
+				if humanoid.Health > 0 then
+					rootPart.CFrame = CFrame.new(snapshot.exitPosition)
+					rootPart.AssemblyLinearVelocity = Vector3.zero
+				end
+				humanoid.WalkSpeed = snapshot.originalWalkSpeed
+				humanoid.JumpPower = snapshot.originalJumpPower
+				humanoid.JumpHeight = snapshot.originalJumpHeight
+				humanoid.AutoRotate = snapshot.originalAutoRotate
+			end
+			rootPart.Anchored = snapshot.originalRootAnchored
+			if self._movementService and humanoid.Health > 0 then
+				self._movementService:NotifyServerTeleport(snapshot.player, snapshot.exitPosition)
+			end
 		end
+	end
+
+	if door and door:IsA("BasePart") then
+		door.CanCollide = true
+	end
+
+	if spotId and self._hidingSpotOccupant[spotId] == userId then
+		self._hidingSpotOccupant[spotId] = nil
+	end
+	if spotId then
 		self:_updateHidingSpotPartAttributes(spotId, nil)
 	end
 	self._playerHidingSpot[userId] = nil
+	self._hidingSnapshots[userId] = nil
 end
 
 function MonsterService:_updateHidingSpotPartAttributes(
@@ -281,13 +360,7 @@ function MonsterService:HandleHidingSpotInteraction(
 		return false, "PlayerNotAlive"
 	end
 
-	if
-		not security:ValidateDistance(
-			player,
-			hidingSpotPart.Position,
-			GameConfig.MAX_INTERACTION_DISTANCE
-		)
-	then
+	if not security:ValidateDistance(player, hidingSpotPart.Position, GameConfig.MAX_INTERACTION_DISTANCE) then
 		return false, "OutOfRange"
 	end
 
@@ -295,25 +368,70 @@ function MonsterService:HandleHidingSpotInteraction(
 	local userId = player.UserId
 	local currentSpot = self._playerHidingSpot[userId]
 
-	-- If player is already inside this hiding spot, exit it
 	if currentSpot == spotId then
 		self:ClearPlayerHidingState(userId)
 		return true, "ExitedHidingSpot"
 	end
 
-	-- Reject if another player is already occupying this hiding spot
 	local existingOccupant = self._hidingSpotOccupant[spotId]
 	if existingOccupant and existingOccupant ~= userId then
 		return false, "HidingSpotOccupied"
 	end
 
-	-- Clear any previous spot before entering the new hiding spot
+	local spotConfig = self:_getHidingSpotConfig(spotId)
+	if not spotConfig then
+		return false, "InvalidHidingSpotConfig"
+	end
+
+	local insidePosition = hidingSpotPart.Position + spotConfig.insideOffset
+	local exitPosition = hidingSpotPart.Position + spotConfig.exitOffset
+	if self._hubService then
+		if not self._hubService:IsPositionSupportedByFloor(insidePosition)
+			or not self._hubService:IsPositionSupportedByFloor(exitPosition)
+			or self._hubService:IsPositionBlockedByWall(exitPosition, 0.35)
+		then
+			return false, "UnsafeHidingSpotGeometry"
+		end
+	end
+
 	if currentSpot then
 		self:ClearPlayerHidingState(userId)
 	end
 
+	local door = hidingSpotPart:FindFirstChild("LockerDoor")
+	if not door or not door:IsA("BasePart") then
+		return false, "MissingLockerDoor"
+	end
+
+	local snapshot = {
+		player = player,
+		rootPart = rootPart,
+		humanoid = humanoid,
+		insidePosition = insidePosition,
+		exitPosition = exitPosition,
+		originalRootAnchored = rootPart.Anchored,
+		originalWalkSpeed = humanoid.WalkSpeed,
+		originalJumpPower = humanoid.JumpPower,
+		originalJumpHeight = humanoid.JumpHeight,
+		originalAutoRotate = humanoid.AutoRotate,
+	}
+
+	door.CanCollide = false
+	rootPart.CFrame = CFrame.new(insidePosition)
+	rootPart.AssemblyLinearVelocity = Vector3.zero
+	rootPart.Anchored = true
+	humanoid.WalkSpeed = 0
+	humanoid.JumpPower = 0
+	humanoid.JumpHeight = 0
+	humanoid.AutoRotate = false
+	door.CanCollide = true
+
+	self._hidingSnapshots[userId] = snapshot
 	self._playerHidingSpot[userId] = spotId
 	self._hidingSpotOccupant[spotId] = userId
+	if self._movementService then
+		self._movementService:NotifyServerTeleport(player, insidePosition)
+	end
 	self:_updateHidingSpotPartAttributes(spotId, userId)
 	return true, "EnteredHidingSpot"
 end
