@@ -142,6 +142,14 @@ function RoundService:GetLastOutcome(): NetworkTypes.RoundOutcome
 	return self._lastOutcome
 end
 
+-- Keep extraction and primary-objective completion as separate result dimensions.
+function RoundService:DetermineRoundOutcome(extractedCount: number, objectiveComplete: boolean): NetworkTypes.RoundOutcome
+	if extractedCount <= 0 then
+		return "FAILED"
+	end
+	return if objectiveComplete then "SUCCESS" else "PARTIAL"
+end
+
 function RoundService:GetPlayerStatus(player: Player): NetworkTypes.PlayerRoundStatus
 	local entry = self._roster[player.UserId]
 	if not entry then
@@ -913,7 +921,8 @@ function RoundService:_enterReturnPhase()
 		end
 	end
 
-	self._lastOutcome = if extractedCount > 0 then "SUCCESS" else "FAILED"
+	local _, _, objectiveComplete = self:GetObjectiveProgress()
+	self._lastOutcome = self:DetermineRoundOutcome(extractedCount, objectiveComplete)
 
 	self:_transitionTo("RETURN", GameConfig.RoundDurations.RETURN)
 	self:_broadcastPlayerStatuses()
@@ -922,10 +931,19 @@ function RoundService:_enterReturnPhase()
 		self:BroadcastNotification(
 			"ReturningToHub",
 			string.format(
-				"Train departing Station 001 with %d extracted crew. Returning to Train Hub.",
+				"Mission complete! Train departing Station 001 with %d extracted crew. Returning to Train Hub.",
 				extractedCount
 			),
 			"Success"
+		)
+	elseif self._lastOutcome == "PARTIAL" then
+		self:BroadcastNotification(
+			"ExpeditionPartial",
+			string.format(
+				"Extraction secured for %d crew, but the primary objective was not completed. Expedition recorded as PARTIAL.",
+				extractedCount
+			),
+			"Warning"
 		)
 	else
 		self:BroadcastNotification(
