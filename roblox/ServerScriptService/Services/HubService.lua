@@ -55,6 +55,7 @@ local HubService: { [string]: any } = {
 	_allocatedSlots = {} :: { [number]: number }, -- slotIndex (1..6) -> userId
 	_playerSlots = {} :: { [number]: number }, -- userId -> slotIndex (1..6)
 	_movementService = nil :: any,
+	_monsterService = nil :: any,
 }
 
 local function createPart(props: {
@@ -93,6 +94,10 @@ end
 
 function HubService:SetMovementService(movementService: any)
 	self._movementService = movementService
+end
+
+function HubService:SetMonsterService(monsterService: any)
+	self._monsterService = monsterService
 end
 
 function HubService:Start()
@@ -897,10 +902,15 @@ function HubService:BuildStation001Environment(): Model
 end
 
 function HubService:SetStationDoorsOpen(isOpen: boolean)
+	local stateChanged = self._stationDoorsOpen ~= isOpen
 	self._stationDoorsOpen = isOpen
 	for _, doorPart in ipairs(self._trainDoorParts) do
 		doorPart.CanCollide = not isOpen
 		doorPart.Transparency = if isOpen then 0.85 else 0.15
+	end
+
+	if stateChanged and self._monsterService and #self._trainDoorParts > 0 then
+		self._monsterService:EmitWorldNoise("DoorTransit", self._trainDoorParts[1].Position)
 	end
 end
 
