@@ -143,7 +143,10 @@ function RoundService:GetLastOutcome(): NetworkTypes.RoundOutcome
 end
 
 -- Keep extraction and primary-objective completion as separate result dimensions.
-function RoundService:DetermineRoundOutcome(extractedCount: number, objectiveComplete: boolean): NetworkTypes.RoundOutcome
+function RoundService:DetermineRoundOutcome(
+	extractedCount: number,
+	objectiveComplete: boolean
+): NetworkTypes.RoundOutcome
 	if extractedCount <= 0 then
 		return "FAILED"
 	end
