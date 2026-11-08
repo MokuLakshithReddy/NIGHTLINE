@@ -360,7 +360,13 @@ function MonsterService:HandleHidingSpotInteraction(
 		return false, "PlayerNotAlive"
 	end
 
-	if not security:ValidateDistance(player, hidingSpotPart.Position, GameConfig.MAX_INTERACTION_DISTANCE) then
+	if
+		not security:ValidateDistance(
+			player,
+			hidingSpotPart.Position,
+			GameConfig.MAX_INTERACTION_DISTANCE
+		)
+	then
 		return false, "OutOfRange"
 	end
 
@@ -386,7 +392,8 @@ function MonsterService:HandleHidingSpotInteraction(
 	local insidePosition = hidingSpotPart.Position + spotConfig.insideOffset
 	local exitPosition = hidingSpotPart.Position + spotConfig.exitOffset
 	if self._hubService then
-		if not self._hubService:IsPositionSupportedByFloor(insidePosition)
+		if
+			not self._hubService:IsPositionSupportedByFloor(insidePosition)
 			or not self._hubService:IsPositionSupportedByFloor(exitPosition)
 			or self._hubService:IsPositionBlockedByWall(exitPosition, 0.35)
 		then
