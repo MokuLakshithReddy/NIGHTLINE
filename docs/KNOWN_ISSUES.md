@@ -18,7 +18,16 @@
 
 ## 2. Current Scope Boundaries (By Design)
 
-1. **Autonomous Spawning & Patrol Loop for The Hollow (`Milestone 3`):**
-   - Per project instructions, all server-side interfaces for **The Hollow** (`MonsterConfig.lua` and `MonsterService.lua`: detection, noise events, state management, station navigation, hiding locations, and player elimination) are prepared and verified, while spawning the active autonomous monster NPC is deferred until the mission-specific objective system is reviewed.
+1. **Autonomous Hollow playtest checklist:**
+   - [ ] Enter Station 001 and confirm exactly one Hollow spawns; no Hollow exists in the Train Hub.
+   - [ ] Walk and sprint within sight / sound range; confirm the Hollow patrols, investigates noise, spots an exposed player and chases.
+   - [ ] Break line of sight; confirm it searches the last known position then returns to patrol.
+   - [ ] Enter a locker before the attack telegraph ends; confirm the attack is cancelled or rejected while physically hidden.
+   - [ ] Allow the telegraph to finish while exposed; confirm the server-validated attack eliminates only a live, in-expedition target.
+   - [ ] Extract / end the round; confirm the Hollow and its AI loop are stopped and destroyed.
+
+
+1. **Hollow rig art, animation and live Studio balancing:**
+   - A server-owned procedural Hollow rig and bounded patrol / investigate / chase / search / return AI lifecycle are implemented in the current issue work. The rig is a functional greybox placeholder with a Humanoid, not a final authored mesh, animation set, audio suite or tuned pathfinding experience. Roblox Studio multi-client verification and animation/art integration remain required.
 2. **DataStore Persistence & Scrap Economy (`Milestone 4`):**
    - Scheduled for **Milestone 4** per the build specification.
