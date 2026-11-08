@@ -2,7 +2,7 @@
 --[[
 	ItemConfig.lua
 	Definitions for MVP equipment and mission items (Section 6.1).
-	Used by InventoryService on the server and UI/Input controllers on the client.
+	Used by InventoryService and ObjectiveService on the server and UI/Input controllers on the client.
 ]]
 
 export type ItemDefinition = {
@@ -39,6 +39,14 @@ local ItemConfig: { [string]: ItemDefinition } = {
 		equippableInHub = false,
 		cooldownSeconds = 0.5,
 	}),
+	CargoContainer = table.freeze({
+		id = "CargoContainer",
+		displayName = "Sealed Transit Cargo Container",
+		category = "MissionItem" :: "MissionItem",
+		description = "Sealed manifest container required for the Recover Cargo station objective.",
+		equippableInHub = false,
+		cooldownSeconds = 0.5,
+	}),
 }
 
 local AllowedHubEquipmentIds: { [string]: boolean } = table.freeze({
@@ -46,7 +54,13 @@ local AllowedHubEquipmentIds: { [string]: boolean } = table.freeze({
 	Flare = true,
 })
 
+local AllowedMissionItemIds: { [string]: boolean } = table.freeze({
+	Fuse = true,
+	CargoContainer = true,
+})
+
 return table.freeze({
 	Items = table.freeze(ItemConfig),
 	AllowedHubEquipmentIds = AllowedHubEquipmentIds,
+	AllowedMissionItemIds = AllowedMissionItemIds,
 })

@@ -3,6 +3,7 @@
 	InteractionService.lua
 	Validates server-side ProximityPrompt activations using CollectionService tags,
 	character existence, living state, distance checks, and per-player cooldowns (Section 6.2 & Section 10).
+	Routes StationObjective prompts to ObjectiveService and HidingSpot prompts to MonsterService.
 ]]
 
 local CollectionService = game:GetService("CollectionService")
@@ -16,16 +17,30 @@ local InteractionService: { [string]: any } = {
 	_securityService = nil :: any,
 	_inventoryService = nil :: any,
 	_roundService = nil :: any,
+	_objectiveService = nil :: any,
+	_monsterService = nil :: any,
 }
 
 function InteractionService:Init(dependencies: {
 	securityService: any,
 	inventoryService: any,
 	roundService: any,
+	objectiveService: any?,
+	monsterService: any?,
 })
 	self._securityService = dependencies.securityService
 	self._inventoryService = dependencies.inventoryService
 	self._roundService = dependencies.roundService
+	self._objectiveService = dependencies.objectiveService
+	self._monsterService = dependencies.monsterService
+end
+
+function InteractionService:SetObjectiveService(objectiveService: any)
+	self._objectiveService = objectiveService
+end
+
+function InteractionService:SetMonsterService(monsterService: any)
+	self._monsterService = monsterService
 end
 
 function InteractionService:Start()
@@ -88,7 +103,15 @@ function InteractionService:HandlePromptTriggered(
 	elseif CollectionService:HasTag(parentPart, GameConfig.Tags.ExtractionZone) then
 		return self._roundService:TryExtractPlayer(player)
 	elseif CollectionService:HasTag(parentPart, GameConfig.Tags.StationObjective) then
+		if self._objectiveService then
+			return self._objectiveService:HandleObjectiveInteraction(player, parentPart)
+		end
 		return self._roundService:HandleStationObjectiveInteraction(player, parentPart)
+	elseif CollectionService:HasTag(parentPart, GameConfig.Tags.HidingSpot) then
+		if self._monsterService then
+			return self._monsterService:HandleHidingSpotInteraction(player, parentPart)
+		end
+		return false, "MissingMonsterService"
 	end
 
 	return false, "UnhandledTag"

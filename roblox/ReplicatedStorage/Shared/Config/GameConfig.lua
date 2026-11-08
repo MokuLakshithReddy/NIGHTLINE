@@ -21,7 +21,7 @@ export type RoundDurationsMap = {
 
 local GameConfig = {
 	GAME_TITLE = "NIGHTLINE: LAST TRAIN",
-	VERSION = "0.2.0-station001-playable",
+	VERSION = "0.3.0-objectives-and-hollow-prep",
 
 	-- Crew & Server Limits (Appendix A)
 	MAX_PLAYERS_PER_SERVER = 6,
@@ -100,6 +100,13 @@ local GameConfig = {
 		EquipmentLocker = "NightlineEquipmentLocker",
 		DestinationTerminal = "NightlineDestinationTerminal",
 		StationObjective = "NightlineStationObjective",
+		FusePickup = "NightlineFusePickup",
+		FuseSocket = "NightlineFuseSocket",
+		CargoPickup = "NightlineCargoPickup",
+		CargoDropPoint = "NightlineCargoDropPoint",
+		SignalTerminal = "NightlineSignalTerminal",
+		HidingSpot = "NightlineHidingSpot",
+		HollowWaypoint = "NightlineHollowWaypoint",
 	}),
 }
 

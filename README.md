@@ -1,7 +1,7 @@
 # NIGHTLINE: LAST TRAIN
 
 **Tagline:** Every stop is a risk. Every return is a reward.  
-**Version:** 0.2.0 (Priorities 1–4 Complete: Reproducible CI + `package-lock.json`, Physically Playable Station 001 Environment, Complete 10-Stage Round Lifecycle Verification)  
+**Version:** 0.3.0 (Priorities 1–4 Complete: Mission-Specific Objectives via `ObjectiveService`, Independent & Cooperative Mission Regression Suite, and Prepared Server Interfaces for The Hollow via `MonsterService`)  
 **Target Platform:** Roblox (Luau `--!strict`, Rojo 7.7.1, Native Modular Service/Controller Architecture)
 
 ---
@@ -11,21 +11,25 @@
 **NIGHTLINE: LAST TRAIN** is a 1–6 player cooperative survival adventure on Roblox. A crew boards the last functioning train traveling through an abandoned transit network, prepares equipment inside the Train Hub, votes on the next station destination, explores dangerous stations to complete objectives while evading **The Hollow**, and extracts before the train departs.
 
 This repository provides:
-1. **The Native Luau & Rojo 7.7.1 Project (`/roblox`, `default.project.json`, `selene.toml`, `stylua.toml`, `.luaurc`, `rokit.toml`)**: Verified with the official `luau` (`0.746`), `luau-analyze` (`0.746`), `luau-lsp` (`1.70.1`), `rojo` (`7.7.1`), `selene` (`0.32.0`), and `stylua` (`2.6.0`) binaries.
+1. **The Native Luau & Rojo 7.7.1 Project (`/roblox`, `default.project.json`, `selene.toml`, `stylua.toml`, `.luaurc`, `rokit.toml`)**: Verified across all 21 Luau modules with the official `luau` (`0.746`), `luau-analyze` (`0.746`), `luau-lsp` (`1.70.1`), `rojo` (`7.7.1`), `selene` (`0.32.0`), and `stylua` (`2.6.0`) binaries.
 2. **Reproducible Toolchain Bootstrap (`scripts/bootstrap-toolchain.sh`), Committed Lockfile (`package-lock.json`), & GitHub Actions CI (`.github/workflows/ci.yml`)**: Runs `npm ci` cleanly from a fresh checkout and installs all pinned Linux `x86_64` binaries (`luau`, `luau-analyze`, `luau-lsp`, `rojo`, `stylua`, `selene`) and official Roblox `globalTypes.d.luau` definitions.
-3. **Physically Playable Station 001 Environment (`HubService.lua`, `RoundService.lua`, `InteractionService.lua`, `GameConfig.lua`)**:
+3. **Mission-Specific Objectives & Dedicated `ObjectiveService.lua` (`ObjectiveService.lua`, `ObjectiveConfig.lua`, `InventoryService.lua`, `HubService.lua`)**:
+   - **`RestorePower` (`requiredProgress = 3`)**: Locate three individual fuses (`FusePickup_01..03`), pick up and carry them in `InventoryService` (`"Fuse"`), and install them into three designated maintenance sockets (`FuseSocket_01..03`) inside the Maintenance Room.
+   - **`RecoverCargo` (`requiredProgress = 2`)**: Locate two sealed cargo containers (`CargoContainer_01..02`) in the Cargo Storage Bay, pick up and carry them (`"CargoContainer"`, 1 carried at a time per player), and deliver them to the platform drop point (`CargoDropPoint_01`).
+   - **`RepairSignal` (`requiredProgress = 3`)**: Activate three communication terminals (`SignalTerminal_01..03`) across the Control Room and Main Concourse.
+   - **Strict Server Validation & Anti-Abuse**: Rejects interactions unrelated to the active mission (`"MissionMismatch"`), prevents duplicate collection/installation/delivery, enforces server-side distance checks (`<= 14.0` studs) and cooldowns, resets cleanly between rounds, and automatically restores carried uninstalled fuses or undelivered cargo containers back to their Station 001 pickup spots if the carrier is eliminated or disconnects.
+4. **Prepared Server-Side Interfaces for The Hollow (`MonsterService.lua`, `MonsterConfig.lua`)**:
+   - Implements the complete server-side interfaces for **player detection** (sight range, FOV cone, wall line-of-sight via `HubService`, hiding spot immunity, threat scoring), **noise events** (`Walk`, `Sprint`, `ObjectiveInteraction`, `FlareDistraction`, `DoorTransit`), **monster state management** (`INACTIVE`, `PATROL`, `INVESTIGATE`, `CHASE`, `SEARCH`, `RETURN`), **station navigation** (8-node Station 001 waypoint graph + BFS route solver), **hiding locations** (6 physical lockers `HidingLocker_01..06` with single-occupant enforcement), and **validated player elimination** (`CanEliminateTarget` / `ExecuteValidatedElimination`). Per instructions, the active autonomous monster NPC is not spawned until the objective system is verified.
+5. **Physically Playable Station 001 Environment (`HubService.lua`)**:
    - Solid `CanCollide = true` floor slabs (`TrainFloor`, `TrainToStationBridge`, `StationPlatformFloor`, `MainConcourseFloor`, `MaintenanceRoomFloor`, `ControlRoomFloor`, `CargoStorageFloor`) with zero fall-through gaps.
-   - Segmented train right wall (`WallRight_Front`, `WallRight_Center`, `WallRight_Rear`, lintels) with two 8-stud-wide openable bulkhead doors (`Door_ExtractionHatch` at `Z = -12..-4` and `Door_ArrivalHatch` at `Z = 20..28`) that seal during transit and open at Station 001.
-   - Six solid `CanCollide = true`, `Anchored = true` arrival spawn pads (`StationEntrySpawn_01..06` at `X = 15..21, Z = 18..30`), strictly outside the extraction zone (`ExtractionPlatformZone` at `X = 16, Z = -8`, radius `10.0` studs, minimum 26.02 studs separation).
-   - Continuous 12-stud-tall perimeter collision walls (`CanCollide = true`) with 12-stud-wide doorways into the Maintenance Room, Control Room, and Cargo Storage Bay, plus 3 interactive `NightlineStationObjective` terminals (`RestorePower`, `RepairSignal`, `RecoverCargo`).
-4. **Real Luau VM & Toolchain Automated Test Suite (`src/engine/luauVmRunner.ts`, `src/engine/nightline.test.ts`)**: Compiles `NIGHTLINE_Last_Train.rbxl` with Rojo 7.7.1, runs `luau-analyze` and `luau-lsp analyze` in `--!strict` mode, runs `selene` and `stylua --check`, and executes the actual `/roblox/**/*.lua` modules inside the official `luau` VM across all 10 round lifecycle stages.
-5. **Interactive Studio Workbench & Train Hub Simulator (`/src`)**: Runs an interactive 2D Train Hub & Station 001 Server State Machine Workbench on port `3000` (`npm run dev`). Note: The TypeScript workbench is a visual companion for browser inspection; Luau logic and Station 001 physical geometry contracts are verified by the official `luau` VM and static analysis toolchain, while live 3D rigid-body physics and multi-client replication require manual testing in desktop Roblox Studio.
+   - Six solid `CanCollide = true`, `Anchored = true` arrival spawn pads (`StationEntrySpawn_01..06` at `X = 15..21, Z = 18..30`), strictly outside `ExtractionPlatformZone` (`X = 16, Z = -8`, radius `10.0` studs).
+6. **Real Luau VM & Toolchain Automated Test Suite (`src/engine/luauVmRunner.ts`, `src/engine/nightline.test.ts`)**: Compiles `NIGHTLINE_Last_Train.rbxl` with Rojo 7.7.1, runs `luau-analyze` and `luau-lsp analyze` in `--!strict` mode, runs `selene` and `stylua --check`, and executes the actual `/roblox/**/*.lua` modules inside the official `luau` VM across all 3 missions, `MonsterService` interfaces, and all 10 round lifecycle stages.
 
 ---
 
 ## 2. Technology Stack
 
-- **Language:** Luau (`--!strict` mode enabled across all 18 modules)
+- **Language:** Luau (`--!strict` mode enabled across all 21 modules)
 - **Architecture:** Native modular Service (`ServerScriptService/Services`) and Controller (`StarterPlayerScripts/Controllers`) ModuleScripts with explicit `Init()` and `Start()` lifecycles. No Knit, Flamework, Nevermore, or Matter.
 - **Workflow:** Rojo `7.7.1` (`default.project.json`, compliant with Roblox's content-property serialization update)
 - **Formatting, Linting & Type Checking:** StyLua `2.6.0` (`stylua.toml`), Selene `0.32.0` (`selene.toml`), Luau CLI `0.746`, and Luau Language Server `1.70.1` (`.luaurc` + `globalTypes.d.luau`)
@@ -57,6 +61,7 @@ This repository provides:
 |   |   |   |   |-- ItemConfig.lua
 |   |   |   |   |-- StationConfig.lua
 |   |   |   |   |-- ObjectiveConfig.lua
+|   |   |   |   |-- MonsterConfig.lua
 |   |   |   |   `-- RewardConfig.lua
 |   |   |   |-- Types/
 |   |   |   |   `-- NetworkTypes.lua
@@ -72,6 +77,8 @@ This repository provides:
 |   |       |-- MovementService.lua
 |   |       |-- HubService.lua
 |   |       |-- InventoryService.lua
+|   |       |-- ObjectiveService.lua
+|   |       |-- MonsterService.lua
 |   |       |-- RoundService.lua
 |   |       `-- InteractionService.lua
 |   `-- StarterPlayer/
@@ -128,4 +135,4 @@ npm run build
 When opening `NIGHTLINE_Last_Train.rbxl` in desktop Roblox Studio for multiplayer testing:
 1. **Max Players per Server:** Set Place Settings -> Access -> **Maximum Visitor Count = 6**.
 2. **Studio API Access (prepared for Milestone 4):** Enable Game Settings -> Security -> **Enable Studio Access to API Services**.
-3. **Multiplayer Local Server Test (Manual Step):** In Roblox Studio -> **Test** tab -> select **Local Server** with **2–6 Players** and click **Start** to verify live 3D character physics, Station 001 concourse navigation, `Humanoid.Died` -> `CharacterAdded` respawning, sprint replication, and physical extraction zone boarding. *(Note: Six-player desktop Roblox Studio multiplayer testing has not been performed inside this headless Linux environment.)*
+3. **Multiplayer Local Server Test (Manual Step):** In Roblox Studio -> **Test** tab -> select **Local Server** with **2–6 Players** and click **Start** to verify live 3D character physics, Station 001 concourse navigation, `RestorePower`/`RecoverCargo`/`RepairSignal` interactions, hiding lockers, `Humanoid.Died` -> `CharacterAdded` respawning, sprint replication, and physical extraction zone boarding. *(Note: Six-player desktop Roblox Studio multiplayer testing has not been performed inside this headless Linux environment.)*

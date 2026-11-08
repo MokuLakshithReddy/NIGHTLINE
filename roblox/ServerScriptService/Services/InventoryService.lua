@@ -3,6 +3,7 @@
 	InventoryService.lua
 	Owns server-authoritative player equipment loadouts (2 slots) and mission items (Section 6.1 & Section 10).
 	Never allows clients to set arbitrary item IDs or mutate inventory outside preparation phases.
+	Mission items (Fuse, CargoContainer) are modified exclusively by server-side ObjectiveService validation.
 ]]
 
 local Players = game:GetService("Players")
@@ -75,6 +76,55 @@ function InventoryService:ResetMissionItemsForRound(player: Player)
 	local record = self:EnsurePlayerInventory(player)
 	table.clear(record.missionItems)
 	self:SyncToPlayer(player)
+end
+
+function InventoryService:GetMissionItemCount(
+	player: Player,
+	itemId: NetworkTypes.MissionItemId
+): number
+	local record = self:EnsurePlayerInventory(player)
+	return record.missionItems[itemId] or 0
+end
+
+function InventoryService:AddMissionItem(
+	player: Player,
+	itemId: NetworkTypes.MissionItemId,
+	amount: number?
+): (boolean, number)
+	if not ItemConfig.AllowedMissionItemIds[itemId] then
+		return false, 0
+	end
+	local delta = if amount and amount > 0 then math.floor(amount) else 1
+	local record = self:EnsurePlayerInventory(player)
+	local currentCount = record.missionItems[itemId] or 0
+	local updatedCount = currentCount + delta
+	record.missionItems[itemId] = updatedCount
+	self:SyncToPlayer(player)
+	return true, updatedCount
+end
+
+function InventoryService:ConsumeMissionItem(
+	player: Player,
+	itemId: NetworkTypes.MissionItemId,
+	amount: number?
+): (boolean, number)
+	if not ItemConfig.AllowedMissionItemIds[itemId] then
+		return false, 0
+	end
+	local delta = if amount and amount > 0 then math.floor(amount) else 1
+	local record = self:EnsurePlayerInventory(player)
+	local currentCount = record.missionItems[itemId] or 0
+	if currentCount < delta then
+		return false, currentCount
+	end
+	local remaining = currentCount - delta
+	if remaining > 0 then
+		record.missionItems[itemId] = remaining
+	else
+		record.missionItems[itemId] = nil
+	end
+	self:SyncToPlayer(player)
+	return true, remaining
 end
 
 function InventoryService:GetInventoryPayload(player: Player): NetworkTypes.InventoryPayload

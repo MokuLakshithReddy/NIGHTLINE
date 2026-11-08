@@ -8,13 +8,15 @@
 	- State-aware player spawning for living/fresh characters: Hub Spawns, Boarding Bay,
 	  Station 001 Arrival Spawns (strictly outside Extraction Zone), and Eliminated Recovery Bay.
 	- Never heals or pivots a dead Humanoid; dead characters must respawn as fresh character models (Remediation #2).
-	- Physically playable Station 001 environment (Priority 2):
+	- Physically playable Station 001 environment:
 	  - Solid CanCollide=true StationPlatformFloor, TrainToStationBridge (0-stud gap), MainConcourseFloor,
 	    MaintenanceRoomFloor, ControlRoomFloor, and CargoStorageFloor.
 	  - Segmented Train right wall with openable bulkhead doors connecting the train interior to the station platform.
 	  - Six solid CanCollide=true StationEntrySpawn pads supported by StationPlatformFloor, strictly outside the extraction zone.
 	  - Accessible ExtractionPlatformDeck & ExtractionPlatformZone (16, 3, -8) with ProximityPrompt.
-	  - Full perimeter collision walls and verifiable gap-free walkable navigation paths.
+	  - Mission-specific objective objects (RestorePower: 3 Fuses + 3 Sockets; RecoverCargo: 2 Cargo Containers + Drop Point;
+	    RepairSignal: 3 Communication Terminals).
+	  - Hollow AI preparation infrastructure: Station 001 Navigation Waypoints and Hiding Locations.
 ]]
 
 local CollectionService = game:GetService("CollectionService")
@@ -22,6 +24,9 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 
 local GameConfig = require(ReplicatedStorage.Shared.Config.GameConfig)
+local MonsterConfig = require(ReplicatedStorage.Shared.Config.MonsterConfig)
+local NetworkTypes = require(ReplicatedStorage.Shared.Types.NetworkTypes)
+local ObjectiveConfig = require(ReplicatedStorage.Shared.Config.ObjectiveConfig)
 
 local HubService: { [string]: any } = {
 	Name = "HubService",
@@ -37,6 +42,11 @@ local HubService: { [string]: any } = {
 	_stationEntrySpawnParts = {} :: { BasePart },
 	_eliminatedSpawnParts = {} :: { BasePart },
 	_stationObjectiveParts = {} :: { BasePart },
+	_stationObjectivePartsByName = {} :: { [string]: BasePart },
+	_hidingSpotParts = {} :: { BasePart },
+	_hidingSpotPartsById = {} :: { [string]: BasePart },
+	_stationWaypointParts = {} :: { BasePart },
+	_stationWaypointGraph = {} :: { [string]: NetworkTypes.StationWaypoint },
 	_trainDoorParts = {} :: { BasePart },
 	_collidableFloorParts = {} :: { BasePart },
 	_collidableWallParts = {} :: { BasePart },
@@ -507,17 +517,15 @@ function HubService:_buildTrainHubGeometry()
 end
 
 --[[
-	Priority 2: Builds the complete, physically playable Station 001 environment inside
-	Workspace.World.Runtime.ActiveStation:
-	- TrainToStationBridge (X = 9..13, Z = -42..+42): Zero-gap bridge connecting TrainFloor to StationPlatformFloor.
-	- StationPlatformFloor (X = 11..29, Z = -42..+42): Solid CanCollide=true platform supporting all 6 StationEntrySpawns
-	  and the ExtractionPlatformDeck/ExtractionPlatformZone.
-	- MainConcourseFloor (X = 29..65, Z = -42..+42): Solid CanCollide=true concourse connected seamlessly to the platform.
-	- MaintenanceRoomFloor (X = 33..61, Z = -66..-42): North wing room connected via a 12-stud doorway at Z = -42.
-	- ControlRoomFloor (X = 65..89, Z = -18..+18): East wing room connected via a 12-stud doorway at X = 65.
-	- CargoStorageFloor (X = 33..61, Z = 42..66): South wing room connected via a 12-stud doorway at Z = +42.
-	- Continuous 12-stud-tall collision boundary walls around the entire station perimeter.
-	- Three interactive Station Objective terminals (Maintenance Fuse Box, Control Signal Console, Cargo Manifest Crate).
+	Builds the complete, physically playable Station 001 environment inside
+	Workspace.World.Runtime.ActiveStation, including:
+	- Solid CanCollide=true floors (TrainToStationBridge, StationPlatformFloor, MainConcourseFloor,
+	  MaintenanceRoomFloor, ControlRoomFloor, CargoStorageFloor).
+	- Six solid CanCollide=true StationEntrySpawn pads (Z = 18..30, outside Extraction Zone).
+	- Accessible ExtractionPlatformDeck & ExtractionPlatformZone (16, 3, -8).
+	- Full perimeter collision walls.
+	- Mission-specific objective nodes for RestorePower, RecoverCargo, and RepairSignal.
+	- Hollow AI preparation infrastructure: Station 001 Navigation Waypoints and Hiding Locations.
 ]]
 function HubService:BuildStation001Environment(): Model
 	local activeStation = self._activeStationFolder
@@ -526,6 +534,11 @@ function HubService:BuildStation001Environment(): Model
 	activeStation:ClearAllChildren()
 	table.clear(self._stationEntrySpawnParts)
 	table.clear(self._stationObjectiveParts)
+	table.clear(self._stationObjectivePartsByName)
+	table.clear(self._hidingSpotParts)
+	table.clear(self._hidingSpotPartsById)
+	table.clear(self._stationWaypointParts)
+	table.clear(self._stationWaypointGraph)
 	self._extractionZonePart = nil
 
 	-- Rebuild floor/wall registries so we keep Train Hub floors/walls + active station floors/walls
@@ -624,7 +637,6 @@ function HubService:BuildStation001Environment(): Model
 	self:_registerFloorPart(cargoFloor)
 
 	-- 7. Six Solid Station 001 Entry Spawn Pads (X = 15..21, Z = 18..30, Y = 0.85, CanCollide = true)
-	-- Strictly outside ExtractionPlatformZone (16, 3, -8, r = 10.0), minimum distance = 26.02 studs.
 	for index, spawnPos in ipairs(GameConfig.STATION_ENTRY_SPAWNS) do
 		local entryPad = createPart({
 			name = string.format("StationEntrySpawn_%02d", index),
@@ -685,7 +697,6 @@ function HubService:BuildStation001Environment(): Model
 
 	-- 9. Station Perimeter Collision Walls & Room Dividers with 12-stud Doorways (CanCollide = true)
 	local wallSpecs = {
-		-- Platform & Concourse North Perimeter (leaving X = 41..53 open for Maintenance Room corridor)
 		{
 			name = "StationWall_NorthWest",
 			size = Vector3.new(30, 12, 1),
@@ -696,7 +707,6 @@ function HubService:BuildStation001Environment(): Model
 			size = Vector3.new(12, 12, 1),
 			pos = Vector3.new(59, 6.5, -42.5),
 		},
-		-- Maintenance Room Perimeter (X = 33..61, Z = -66..-42)
 		{
 			name = "MaintenanceWall_North",
 			size = Vector3.new(28, 12, 1),
@@ -712,7 +722,6 @@ function HubService:BuildStation001Environment(): Model
 			size = Vector3.new(1, 12, 24),
 			pos = Vector3.new(61.5, 6.5, -54),
 		},
-		-- Platform & Concourse South Perimeter (leaving X = 41..53 open for Cargo Storage corridor)
 		{
 			name = "StationWall_SouthWest",
 			size = Vector3.new(30, 12, 1),
@@ -723,7 +732,6 @@ function HubService:BuildStation001Environment(): Model
 			size = Vector3.new(12, 12, 1),
 			pos = Vector3.new(59, 6.5, 42.5),
 		},
-		-- Cargo Storage Perimeter (X = 33..61, Z = 42..66)
 		{
 			name = "CargoWall_South",
 			size = Vector3.new(28, 12, 1),
@@ -739,7 +747,6 @@ function HubService:BuildStation001Environment(): Model
 			size = Vector3.new(1, 12, 24),
 			pos = Vector3.new(61.5, 6.5, 54),
 		},
-		-- Concourse East Wall (leaving Z = -6..+6 open for Control Room doorway)
 		{
 			name = "ConcourseWall_EastNorth",
 			size = Vector3.new(1, 12, 36),
@@ -750,7 +757,6 @@ function HubService:BuildStation001Environment(): Model
 			size = Vector3.new(1, 12, 36),
 			pos = Vector3.new(65.5, 6.5, 24),
 		},
-		-- Control Room Perimeter (X = 65..89, Z = -18..+18)
 		{
 			name = "ControlWall_East",
 			size = Vector3.new(1, 12, 36),
@@ -781,47 +787,43 @@ function HubService:BuildStation001Environment(): Model
 		self:_registerWallPart(wallPart)
 	end
 
-	-- 10. Interactive Station 001 Objective Terminals in the 3 Wing Rooms
-	local objectiveNodes = {
-		{
-			name = "ObjectiveNode_01_Maintenance",
-			objectText = "Auxiliary Fuse Socket (Maintenance Room)",
-			actionText = "Complete Station Objective Task",
-			pos = Vector3.new(47, 3, -58),
-			color = Color3.fromRGB(245, 158, 11),
-		},
-		{
-			name = "ObjectiveNode_02_Control",
-			objectText = "Dispatch Signal Relay (Control Room)",
-			actionText = "Complete Station Objective Task",
-			pos = Vector3.new(82, 3, 0),
-			color = Color3.fromRGB(56, 189, 248),
-		},
-		{
-			name = "ObjectiveNode_03_Cargo",
-			objectText = "Sealed Transit Cargo Rack (Cargo Storage)",
-			actionText = "Complete Station Objective Task",
-			pos = Vector3.new(47, 3, 58),
-			color = Color3.fromRGB(168, 85, 247),
-		},
+	-- 10. Priority 1: Mission-Specific Station 001 Objective Nodes (RestorePower, RecoverCargo, RepairSignal)
+	local roleToTag: { [NetworkTypes.ObjectiveInteractionRole]: string } = {
+		FusePickup = GameConfig.Tags.FusePickup,
+		FuseSocket = GameConfig.Tags.FuseSocket,
+		CargoPickup = GameConfig.Tags.CargoPickup,
+		CargoDropPoint = GameConfig.Tags.CargoDropPoint,
+		SignalTerminal = GameConfig.Tags.SignalTerminal,
 	}
 
-	for index, nodeSpec in ipairs(objectiveNodes) do
+	for _, nodeSpec in ipairs(ObjectiveConfig.Station001ObjectiveNodes) do
 		local nodePart = createPart({
 			name = nodeSpec.name,
-			size = Vector3.new(4, 4.5, 2.5),
-			cframe = CFrame.new(nodeSpec.pos),
+			size = nodeSpec.size,
+			cframe = CFrame.new(nodeSpec.position),
 			color = nodeSpec.color,
 			material = Enum.Material.Metal,
 			canCollide = true,
 			parent = stationModel,
 		})
 		CollectionService:AddTag(nodePart, GameConfig.Tags.StationObjective)
-		nodePart:SetAttribute("ObjectiveIndex", index)
+		local specificTag = roleToTag[nodeSpec.role]
+		if specificTag then
+			CollectionService:AddTag(nodePart, specificTag)
+		end
+
+		nodePart:SetAttribute("MissionId", nodeSpec.missionId)
+		nodePart:SetAttribute("ObjectiveRole", nodeSpec.role)
+		nodePart:SetAttribute("ObjectiveIndex", nodeSpec.index)
+		nodePart:SetAttribute("ItemKey", nodeSpec.itemKey or nodeSpec.name)
+		nodePart:SetAttribute("Collected", false)
+		nodePart:SetAttribute("Installed", false)
+		nodePart:SetAttribute("Activated", false)
+		nodePart:SetAttribute("DeliveredCount", 0)
 		nodePart:SetAttribute("Completed", false)
 
 		local prompt = Instance.new("ProximityPrompt")
-		prompt.Name = "StationObjectivePrompt_" .. tostring(index)
+		prompt.Name = "ObjectivePrompt_" .. nodeSpec.name
 		prompt.ObjectText = nodeSpec.objectText
 		prompt.ActionText = nodeSpec.actionText
 		prompt.KeyboardKeyCode = Enum.KeyCode.E
@@ -832,6 +834,63 @@ function HubService:BuildStation001Environment(): Model
 		prompt.Parent = nodePart
 
 		table.insert(self._stationObjectiveParts, nodePart)
+		self._stationObjectivePartsByName[nodeSpec.name] = nodePart
+	end
+
+	-- 11. Priority 4: Station 001 Hiding Locations (for The Hollow AI preparation)
+	for _, hideSpec in ipairs(MonsterConfig.Station001HidingSpots) do
+		local hidePart = createPart({
+			name = hideSpec.id,
+			size = Vector3.new(3.2, 6.5, 3.2),
+			cframe = CFrame.new(hideSpec.position),
+			color = Color3.fromRGB(51, 65, 85),
+			material = Enum.Material.Metal,
+			canCollide = true,
+			parent = stationModel,
+		})
+		CollectionService:AddTag(hidePart, GameConfig.Tags.HidingSpot)
+		hidePart:SetAttribute("HidingSpotId", hideSpec.id)
+		hidePart:SetAttribute("RoomId", hideSpec.roomId)
+		hidePart:SetAttribute("OccupiedByUserId", 0)
+
+		local hidePrompt = Instance.new("ProximityPrompt")
+		hidePrompt.Name = "HidingSpotPrompt_" .. hideSpec.id
+		hidePrompt.ObjectText = hideSpec.objectText
+		hidePrompt.ActionText = "Enter Hiding Spot"
+		hidePrompt.KeyboardKeyCode = Enum.KeyCode.E
+		hidePrompt.GamepadKeyCode = Enum.KeyCode.ButtonX
+		hidePrompt.MaxActivationDistance = 10
+		hidePrompt.HoldDuration = 0
+		hidePrompt.RequiresLineOfSight = false
+		hidePrompt.Parent = hidePart
+
+		table.insert(self._hidingSpotParts, hidePart)
+		self._hidingSpotPartsById[hideSpec.id] = hidePart
+	end
+
+	-- 12. Priority 4: Station 001 Navigation Waypoints (for The Hollow AI pathfinding graph)
+	for _, wpSpec in ipairs(MonsterConfig.Station001Waypoints) do
+		local wpPart = createPart({
+			name = wpSpec.id,
+			size = Vector3.new(1.5, 0.2, 1.5),
+			cframe = CFrame.new(wpSpec.position.X, 0.85, wpSpec.position.Z),
+			color = Color3.fromRGB(100, 116, 139),
+			material = Enum.Material.SmoothPlastic,
+			transparency = 0.85,
+			canCollide = false,
+			parent = stationModel,
+		})
+		CollectionService:AddTag(wpPart, GameConfig.Tags.HollowWaypoint)
+		wpPart:SetAttribute("WaypointId", wpSpec.id)
+		wpPart:SetAttribute("RoomId", wpSpec.roomId)
+		table.insert(self._stationWaypointParts, wpPart)
+
+		self._stationWaypointGraph[wpSpec.id] = {
+			id = wpSpec.id,
+			roomId = wpSpec.roomId,
+			position = wpSpec.position,
+			neighbors = table.clone(wpSpec.neighbors),
+		}
 	end
 
 	return stationModel
@@ -853,8 +912,23 @@ function HubService:GetStationObjectiveParts(): { BasePart }
 	return table.clone(self._stationObjectiveParts)
 end
 
+function HubService:GetStationObjectivePartByName(name: string): BasePart?
+	return self._stationObjectivePartsByName[name]
+end
+
+function HubService:GetHidingSpotParts(): { BasePart }
+	return table.clone(self._hidingSpotParts)
+end
+
+function HubService:GetHidingSpotPartById(hidingSpotId: string): BasePart?
+	return self._hidingSpotPartsById[hidingSpotId]
+end
+
+function HubService:GetStationWaypointGraph(): { [string]: NetworkTypes.StationWaypoint }
+	return table.clone(self._stationWaypointGraph)
+end
+
 --[[
-	Priority 2 Verification Helpers:
 	Verifies that a 3D world position is physically supported underneath by at least one
 	anchored, CanCollide=true floor or spawn pad part with no fall-through gaps.
 ]]
@@ -954,8 +1028,6 @@ function HubService:IsPathWalkable(
 	return true, "WalkablePathVerified"
 end
 
--- Remediation #2: Never restore Humanoid.Health or attempt to revive/pivot a dead character.
--- Only living characters (including fresh characters spawned via LoadCharacter / CharacterAdded) are pivoted.
 function HubService:_pivotLivingCharacter(player: Player, targetCFrame: CFrame): boolean
 	local character = player.Character
 	if not character or not character.Parent then
@@ -992,7 +1064,6 @@ function HubService:SpawnPlayerInHub(player: Player, slotIndex: number?): boolea
 	return self:_pivotLivingCharacter(player, spawnPad.CFrame + Vector3.new(0, 2.9, 0))
 end
 
--- Remediation #2: Eliminated players respawn as a fresh character into the Hub Recovery Bay
 function HubService:SpawnEliminatedPlayerInHub(player: Player, slotIndex: number?): boolean
 	local count = #self._eliminatedSpawnParts
 	if count == 0 then
@@ -1003,7 +1074,6 @@ function HubService:SpawnEliminatedPlayerInHub(player: Player, slotIndex: number
 	return self:_pivotLivingCharacter(player, berth.CFrame + Vector3.new(0, 2.9, 0))
 end
 
--- Priority 2 & Remediation #1: All 6 active station spawns sit on solid CanCollide=true StationPlatformFloor + pads at Z = 18..30
 function HubService:GetActiveStationSpawnPosition(slotIndex: number): Vector3
 	local spawns = GameConfig.STATION_ENTRY_SPAWNS
 	local chosenIndex = ((slotIndex - 1) % #spawns) + 1
@@ -1038,7 +1108,6 @@ function HubService:ReturnAllPlayersToHub(players: { Player })
 	end
 end
 
--- Issue 04 & Remediation #1: Physical Extraction Zone validation on the server
 function HubService:GetExtractionZonePart(): BasePart?
 	return self._extractionZonePart
 end
@@ -1081,6 +1150,11 @@ function HubService:ClearRuntimeStation()
 	self._extractionZonePart = nil
 	table.clear(self._stationEntrySpawnParts)
 	table.clear(self._stationObjectiveParts)
+	table.clear(self._stationObjectivePartsByName)
+	table.clear(self._hidingSpotParts)
+	table.clear(self._hidingSpotPartsById)
+	table.clear(self._stationWaypointParts)
+	table.clear(self._stationWaypointGraph)
 
 	-- Retain only Train Hub floor/wall parts in the collision registries
 	local keptFloors: { BasePart } = {}

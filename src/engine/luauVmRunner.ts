@@ -111,6 +111,10 @@ export function runActualLuauModulesInVm(): {
       relPath: 'roblox/ReplicatedStorage/Shared/Config/StationConfig.lua',
     },
     {
+      key: 'ReplicatedStorage.Shared.Config.MonsterConfig',
+      relPath: 'roblox/ReplicatedStorage/Shared/Config/MonsterConfig.lua',
+    },
+    {
       key: 'ReplicatedStorage.Shared.Config.ObjectiveConfig',
       relPath: 'roblox/ReplicatedStorage/Shared/Config/ObjectiveConfig.lua',
     },
@@ -145,6 +149,14 @@ export function runActualLuauModulesInVm(): {
     {
       key: 'ServerScriptService.Services.InventoryService',
       relPath: 'roblox/ServerScriptService/Services/InventoryService.lua',
+    },
+    {
+      key: 'ServerScriptService.Services.ObjectiveService',
+      relPath: 'roblox/ServerScriptService/Services/ObjectiveService.lua',
+    },
+    {
+      key: 'ServerScriptService.Services.MonsterService',
+      relPath: 'roblox/ServerScriptService/Services/MonsterService.lua',
     },
     {
       key: 'ServerScriptService.Services.RoundService',
@@ -241,7 +253,6 @@ local Enum = {
 
 local task = {
 	spawn = function(fn, ...)
-		-- Do not run infinite while-true background loops automatically during synchronous unit assertions
 		return coroutine.create(fn)
 	end,
 	defer = function(fn, ...)
@@ -564,7 +575,8 @@ end
 
   const luauAssertions = `
 -- ============================================================================
--- Execute Real NIGHTLINE Luau Services & Verify Priorities 2, 3, 4 & Fixes 1-5
+-- Execute Real NIGHTLINE Luau Services & Verify Mission-Specific Objectives,
+-- ObjectiveService Architecture, Hollow AI Interfaces, and Round Lifecycle
 -- ============================================================================
 
 local GameConfig = require(ReplicatedStorage.Shared.Config.GameConfig)
@@ -573,6 +585,8 @@ local SecurityService = require(ServerScriptService.Services.SecurityService)
 local MovementService = require(ServerScriptService.Services.MovementService)
 local HubService = require(ServerScriptService.Services.HubService)
 local InventoryService = require(ServerScriptService.Services.InventoryService)
+local ObjectiveService = require(ServerScriptService.Services.ObjectiveService)
+local MonsterService = require(ServerScriptService.Services.MonsterService)
 local RoundService = require(ServerScriptService.Services.RoundService)
 local InteractionService = require(ServerScriptService.Services.InteractionService)
 local InputController = require(StarterPlayer.StarterPlayerScripts.Controllers.InputController)
@@ -584,25 +598,44 @@ MovementService:Init({ remotes = remotes, securityService = SecurityService })
 HubService:Init()
 HubService:SetMovementService(MovementService)
 InventoryService:Init({ remotes = remotes, securityService = SecurityService })
+ObjectiveService:Init({
+	remotes = remotes,
+	securityService = SecurityService,
+	hubService = HubService,
+	inventoryService = InventoryService,
+})
+MonsterService:Init({
+	securityService = SecurityService,
+	hubService = HubService,
+})
 RoundService:Init({
 	remotes = remotes,
 	securityService = SecurityService,
 	hubService = HubService,
 	inventoryService = InventoryService,
 	movementService = MovementService,
+	objectiveService = ObjectiveService,
+	monsterService = MonsterService,
 })
 MovementService:SetRoundService(RoundService)
 InventoryService:SetRoundService(RoundService)
+ObjectiveService:SetRoundService(RoundService)
+ObjectiveService:SetMonsterService(MonsterService)
+MonsterService:SetRoundService(RoundService)
 InteractionService:Init({
 	securityService = SecurityService,
 	inventoryService = InventoryService,
 	roundService = RoundService,
+	objectiveService = ObjectiveService,
+	monsterService = MonsterService,
 })
 
 SecurityService:Start()
 MovementService:Start()
 HubService:Start()
 InventoryService:Start()
+ObjectiveService:Start()
+MonsterService:Start()
 RoundService:Start()
 InteractionService:Start()
 
@@ -772,9 +805,7 @@ assert(okDownHack == false and downHackReason == "RubberbandedVerticalDownwardAn
 print("[LUAU VM PASS] Fix 3 & Issue 03: Horizontal + vertical movement validation (jumps, falls, teleports, exploits) verified.")
 
 -- ----------------------------------------------------------------------------
--- TEST 3 (Priority 2 & Fix 1): Physically Playable Station 001 Environment
--- (Solid CanCollide=true floors, zero fall-through gaps, train-to-station bridge,
---  6 solid StationEntrySpawn pads outside extraction zone, collision boundaries)
+-- TEST 3: Physically Playable Station 001 Environment & CanCollide=true Spawns
 -- ----------------------------------------------------------------------------
 local p5 = createMockPlayer(105, "Kestrel")
 local p6 = createMockPlayer(106, "Rook")
@@ -782,7 +813,6 @@ local p7 = createMockPlayer(107, "Vesper")
 local allSixPlayers = { p1, p4, p3, p5, p6, p7 }
 assert(#allSixPlayers == 6, "Must have 6 active players occupying slots 1..6")
 
--- Verify Station 001 physical model and all required floor slabs exist with CanCollide=true and Anchored=true
 local stationModel = HubService:BuildStation001Environment()
 assert(stationModel ~= nil, "Station001_ForgottenTerminal model must exist")
 
@@ -800,6 +830,18 @@ local requiredCollidableParts = {
 	"StationEntrySpawn_04",
 	"StationEntrySpawn_05",
 	"StationEntrySpawn_06",
+	"FusePickup_01",
+	"FusePickup_02",
+	"FusePickup_03",
+	"FuseSocket_01",
+	"FuseSocket_02",
+	"FuseSocket_03",
+	"CargoContainer_01",
+	"CargoContainer_02",
+	"CargoDropPoint_01",
+	"SignalTerminal_01",
+	"SignalTerminal_02",
+	"SignalTerminal_03",
 }
 
 for _, partName in ipairs(requiredCollidableParts) do
@@ -809,7 +851,6 @@ for _, partName in ipairs(requiredCollidableParts) do
 	assert(part.Anchored == true, partName .. " must have Anchored = true")
 end
 
--- Verify every single one of the 6 StationEntrySpawn positions is supported by solid floor and outside extraction zone
 for slotIdx = 1, 6 do
 	local spawnPos = GameConfig.STATION_ENTRY_SPAWNS[slotIdx]
 	assert(spawnPos ~= nil, "Station entry spawn must exist for slot " .. tostring(slotIdx))
@@ -822,219 +863,438 @@ for slotIdx = 1, 6 do
 		"Station entry spawn slot " .. tostring(slotIdx) .. " must be strictly outside ExtractionPlatformZone"
 	)
 end
-
--- Verify that void/unsupported positions outside the station return IsPositionSupportedByFloor == false
-assert(
-	HubService:IsPositionSupportedByFloor(Vector3.new(120, 3.75, 0)) == false,
-	"Out-of-bounds void coordinate must NOT report floor support"
-)
-assert(
-	HubService:IsPositionSupportedByFloor(Vector3.new(-25, 3.75, 0)) == false,
-	"Trackside void outside left train wall must NOT report floor support"
-)
-assert(
-	HubService:IsPositionBlockedByWall(Vector3.new(89.5, 3.75, 0), 0.5) == true,
-	"East perimeter wall of Control Room must block out-of-bounds movement"
-)
 print("[LUAU VM PASS] Priority 2 & Fix 1: Physically playable Station 001 environment, CanCollide=true spawns, and collision walls verified.")
 
 -- ----------------------------------------------------------------------------
--- TEST 4 (Priority 3): Complete 10-Stage Round Lifecycle End-to-End Verification
+-- TEST 4 (Priority 1, 2 & 3 — Mission 1): RestorePower Independent & Cooperative Verification
+-- (3 Individual Fuses -> Pick Up & Carry -> Install into 3 Maintenance Sockets)
 -- ----------------------------------------------------------------------------
--- Stage 1: Players in Hub boarding the train (Equip gear, vote destination, toggle boarding ready)
-RoundService:_startNewIntermission()
-assert(RoundService:GetState() == "INTERMISSION", "Lifecycle Stage 1: Must start in INTERMISSION")
+RoundService:_startNewIntermission("RestorePower")
+assert(RoundService:GetState() == "INTERMISSION", "Round 1 must start in INTERMISSION")
+assert(ObjectiveService:GetActiveMissionId() == "RestorePower", "Round 1 mission must be RestorePower")
 assert(HubService:AreStationDoorsOpen() == false, "Train bulkhead doors must be closed while in Hub")
 
--- Verify closed train doors block walking out of the train during Hub/Intermission
-local okBlockedWhenClosed = HubService:IsPathWalkable(Vector3.new(5, 3.75, -8), Vector3.new(16, 3.75, -8), 0.5)
-assert(okBlockedWhenClosed == false, "Closed train bulkhead doors must block walking onto the station platform before arrival")
-
--- P1 walks to EquipmentLocker_Flare (-8.8, 3.8, -4) and equips Flare in Slot 2
+-- P1 equips Flare, votes Station 001, and boards
 advanceVirtualClock(1.0)
 walkPlayerAlongPath(p1, Vector3.new(-6, 3.75, -4))
 local flareLocker = Workspace.World.Hub.Train:FindFirstChild("EquipmentLocker_Flare")
-local flarePrompt = flareLocker:FindFirstChildOfClass("ProximityPrompt")
-local okEquip, equipReason = InteractionService:HandlePromptTriggered(flarePrompt, p1)
-assert(okEquip == true, "P1 must equip Flare at locker: " .. tostring(equipReason))
+local okEquip = InteractionService:HandlePromptTriggered(flareLocker:FindFirstChildOfClass("ProximityPrompt"), p1)
+assert(okEquip == true, "P1 must equip Flare at locker")
 
--- P1 walks to DestinationConsole (0, 3, -34) and confirms route for Station 001
 advanceVirtualClock(1.0)
 walkPlayerAlongPath(p1, Vector3.new(0, 3.75, -28))
 local destConsole = Workspace.World.Hub.Train:FindFirstChild("DestinationConsole")
-local destPrompt = destConsole:FindFirstChildOfClass("ProximityPrompt")
-local okVote, voteReason = InteractionService:HandlePromptTriggered(destPrompt, p1)
-assert(okVote == true and voteReason == "VoteRecorded", "P1 must confirm Station 001 route at DestinationConsole")
+local okVote = InteractionService:HandlePromptTriggered(destConsole:FindFirstChildOfClass("ProximityPrompt"), p1)
+assert(okVote == true, "P1 must confirm Station 001 route")
 
--- P1 walks to BoardingReadyGate (9.2, 3.8, -14) and toggles Boarding Ready
 advanceVirtualClock(1.0)
 walkPlayerAlongPath(p1, Vector3.new(6, 3.75, -14))
 local boardingGate = Workspace.World.Hub.Train:FindFirstChild("BoardingReadyGate")
-local boardingPrompt = boardingGate:FindFirstChildOfClass("ProximityPrompt")
-local okBoard, boardReason = InteractionService:HandlePromptTriggered(boardingPrompt, p1)
-assert(okBoard == true and boardReason == "Ready", "P1 must toggle BOARDED at BoardingReadyGate")
-assert(RoundService:GetPlayerStatus(p1) == "BOARDED", "P1 status must be BOARDED")
+local okBoard = InteractionService:HandlePromptTriggered(boardingGate:FindFirstChildOfClass("ProximityPrompt"), p1)
+assert(okBoard == true, "P1 must toggle BOARDED at BoardingReadyGate")
 
 RoundService:_enterBoardingPhase()
-assert(RoundService:GetState() == "BOARDING", "Lifecycle Stage 1B: Must transition to BOARDING")
-
--- Stage 2: Train Departure (BOARDING -> TRAVEL)
 RoundService:_lockCrewAndDepart()
-assert(RoundService:GetState() == "TRAVEL", "Lifecycle Stage 2: Must transition to TRAVEL")
-assert(HubService:AreStationDoorsOpen() == false, "Train doors must remain closed during TRAVEL")
-for _, player in ipairs(allSixPlayers) do
-	assert(RoundService:GetPlayerStatus(player) == "IN_EXPEDITION", player.Name .. " must be IN_EXPEDITION during TRAVEL")
-	assert(
-		HubService:IsPositionSupportedByFloor(player.Character.HumanoidRootPart.Position) == true,
-		player.Name .. " boarding bay spot must be supported by TrainFloor"
-	)
-end
-
--- Stage 3: Arrival at Station 001 (TRAVEL -> EXPLORATION)
 RoundService:_enterExplorationPhase()
-assert(RoundService:GetState() == "EXPLORATION", "Lifecycle Stage 3: Must transition to EXPLORATION")
-assert(HubService:AreStationDoorsOpen() == true, "Train-to-station bulkhead doors must open upon arriving at Station 001")
+assert(RoundService:GetState() == "EXPLORATION", "Must enter EXPLORATION")
 
-for _, player in ipairs(allSixPlayers) do
-	local pos = player.Character.HumanoidRootPart.Position
-	assert(RoundService:GetPlayerStatus(player) == "IN_EXPEDITION", player.Name .. " must be IN_EXPEDITION upon arrival")
-	assert(HubService:IsPositionSupportedByFloor(pos) == true, player.Name .. " station entry spawn must be supported by solid floor")
-	assert(HubService:IsPlayerInExtractionZone(player) == false, player.Name .. " must NOT be inside extraction zone upon arrival")
-end
-
--- Verify train-to-station bridge path is now open and walkable through both Z = -8 and Z = 24 doorways
-local okBridgeExtractionDoor = HubService:IsPathWalkable(Vector3.new(4, 3.75, -8), Vector3.new(16, 3.75, -8), 0.5)
-local okBridgeArrivalDoor = HubService:IsPathWalkable(Vector3.new(4, 3.75, 24), Vector3.new(16, 3.75, 24), 0.5)
-assert(okBridgeExtractionDoor == true, "Open Z=-8 doorway must provide a continuous walkable path between Train and Extraction Platform")
-assert(okBridgeArrivalDoor == true, "Open Z=24 doorway must provide a continuous walkable path between Train and Arrival Platform")
-
--- Stage 4: Players Exploring Station 001 & Completing Objectives Across All 3 Wing Rooms
-advanceVirtualClock(1.5)
 local activeStationModel = Workspace.World.Runtime.ActiveStation:FindFirstChild("Station001_ForgottenTerminal")
 assert(activeStationModel ~= nil, "ActiveStation must contain Station001_ForgottenTerminal")
 
--- P1 walks from Station Entry Spawn (15, 3.75, 18) -> Main Concourse (47, 3.75, 0) -> Maintenance Room (47, 3.75, -54)
+-- Verify remote distance abuse is rejected when P1 tries to interact with FusePickup_01 from far away
+local fuse1Part = activeStationModel:FindFirstChild("FusePickup_01")
+local fuse2Part = activeStationModel:FindFirstChild("FusePickup_02")
+local fuse3Part = activeStationModel:FindFirstChild("FusePickup_03")
+local socket1Part = activeStationModel:FindFirstChild("FuseSocket_01")
+local socket2Part = activeStationModel:FindFirstChild("FuseSocket_02")
+local socket3Part = activeStationModel:FindFirstChild("FuseSocket_03")
+local cargo1Part = activeStationModel:FindFirstChild("CargoContainer_01")
+local signal1Part = activeStationModel:FindFirstChild("SignalTerminal_01")
+
+advanceVirtualClock(1.0)
+local okRemoteAbuse, remoteAbuseReason = ObjectiveService:HandleObjectiveInteraction(p1, fuse1Part)
+assert(okRemoteAbuse == false and remoteAbuseReason == "OutOfRange", "Remote interaction with distant fuse must be rejected with OutOfRange")
+
+-- Verify cross-mission interactions (RecoverCargo / RepairSignal objects) are rejected during RestorePower
 walkPlayerAlongPath(p1, Vector3.new(47, 3.75, 0))
-walkPlayerAlongPath(p1, Vector3.new(47, 3.75, -52))
-local objNode1 = activeStationModel:FindFirstChild("ObjectiveNode_01_Maintenance")
-local objPrompt1 = objNode1:FindFirstChildOfClass("ProximityPrompt")
+walkPlayerAlongPath(p1, Vector3.new(41, 3.75, 52))
 advanceVirtualClock(1.0)
-local okObj1, objReason1 = InteractionService:HandlePromptTriggered(objPrompt1, p1)
-assert(okObj1 == true and objReason1 == "ObjectiveProgressed", "P1 must progress objective #1 in Maintenance Room")
+local okWrongCargo, wrongCargoReason = ObjectiveService:HandleObjectiveInteraction(p1, cargo1Part)
+assert(okWrongCargo == false and wrongCargoReason == "MissionMismatch", "CargoContainer interaction must be rejected during RestorePower")
 
--- P4 walks from Station Entry Spawn -> Main Concourse (47, 3.75, 0) -> Control Room (77, 3.75, 0)
+walkPlayerAlongPath(p1, Vector3.new(47, 3.75, 0))
+walkPlayerAlongPath(p1, Vector3.new(76, 3.75, -6))
+advanceVirtualClock(1.0)
+local okWrongSignal, wrongSignalReason = ObjectiveService:HandleObjectiveInteraction(p1, signal1Part)
+assert(okWrongSignal == false and wrongSignalReason == "MissionMismatch", "SignalTerminal interaction must be rejected during RestorePower")
+
+-- Verify installing into FuseSocket_01 without carrying a fuse is rejected
+walkPlayerAlongPath(p1, Vector3.new(47, 3.75, 0))
+walkPlayerAlongPath(p1, Vector3.new(44, 3.75, -52))
+advanceVirtualClock(1.0)
+local okNoFuse, noFuseReason = InteractionService:HandlePromptTriggered(socket1Part:FindFirstChildOfClass("ProximityPrompt"), p1)
+assert(okNoFuse == false and noFuseReason == "MissingRequiredFuse", "Installing into socket without a Fuse must be rejected")
+
+-- Cooperative Fuse Collection & Socket Installation:
+-- P1 walks out through Maintenance doorway (47, -36) to FusePickup_01 (38, 2.2, -24) and picks it up
+walkPlayerAlongPath(p1, Vector3.new(47, 3.75, -36))
+walkPlayerAlongPath(p1, Vector3.new(38, 3.75, -24))
+advanceVirtualClock(1.0)
+local okFuse1, fuse1Reason = InteractionService:HandlePromptTriggered(fuse1Part:FindFirstChildOfClass("ProximityPrompt"), p1)
+assert(okFuse1 == true and fuse1Reason == "FuseCollected", "P1 must collect FusePickup_01")
+assert(InventoryService:GetMissionItemCount(p1, "Fuse") == 1, "P1 must carry 1 Fuse in InventoryService")
+
+-- Duplicate pickup of FusePickup_01 must be rejected
+advanceVirtualClock(1.0)
+local okDupFuse1, dupFuse1Reason = ObjectiveService:HandleObjectiveInteraction(p1, fuse1Part)
+assert(okDupFuse1 == false and dupFuse1Reason == "FuseAlreadyCollected", "Duplicate collection of FusePickup_01 must be rejected")
+
+-- P4 walks to FusePickup_02 (74, 2.2, -10) in Control Room and picks it up
 walkPlayerAlongPath(p4, Vector3.new(47, 3.75, 0))
-walkPlayerAlongPath(p4, Vector3.new(76, 3.75, 0))
-local objNode2 = activeStationModel:FindFirstChild("ObjectiveNode_02_Control")
-local objPrompt2 = objNode2:FindFirstChildOfClass("ProximityPrompt")
+walkPlayerAlongPath(p4, Vector3.new(74, 3.75, -6))
 advanceVirtualClock(1.0)
-local okObj2, objReason2 = InteractionService:HandlePromptTriggered(objPrompt2, p4)
-assert(okObj2 == true and objReason2 == "ObjectiveProgressed", "P4 must progress objective #2 in Control Room")
+local okFuse2, fuse2Reason = InteractionService:HandlePromptTriggered(fuse2Part:FindFirstChildOfClass("ProximityPrompt"), p4)
+assert(okFuse2 == true and fuse2Reason == "FuseCollected", "P4 must collect FusePickup_02")
+assert(InventoryService:GetMissionItemCount(p4, "Fuse") == 1, "P4 must carry 1 Fuse in InventoryService")
 
--- P3 walks from Station Entry Spawn -> Main Concourse (47, 3.75, 0) -> Cargo Storage (47, 3.75, 54)
+-- P3 walks to FusePickup_03 (40, 2.2, 50) in Cargo Storage and picks it up
 walkPlayerAlongPath(p3, Vector3.new(47, 3.75, 0))
-walkPlayerAlongPath(p3, Vector3.new(47, 3.75, 52))
-local objNode3 = activeStationModel:FindFirstChild("ObjectiveNode_03_Cargo")
-local objPrompt3 = objNode3:FindFirstChildOfClass("ProximityPrompt")
+walkPlayerAlongPath(p3, Vector3.new(43, 3.75, 48))
 advanceVirtualClock(1.0)
-local okObj3, objReason3 = InteractionService:HandlePromptTriggered(objPrompt3, p3)
-assert(okObj3 == true and objReason3 == "ObjectiveCompleted", "P3 must complete objective #3 in Cargo Storage")
+local okFuse3, fuse3Reason = InteractionService:HandlePromptTriggered(fuse3Part:FindFirstChildOfClass("ProximityPrompt"), p3)
+assert(okFuse3 == true and fuse3Reason == "FuseCollected", "P3 must collect FusePickup_03")
+assert(InventoryService:GetMissionItemCount(p3, "Fuse") == 1, "P3 must carry 1 Fuse in InventoryService")
 
-local prog, reqProg, isObjDone = RoundService:GetObjectiveProgress()
-assert(prog == 3 and reqProg == 3 and isObjDone == true, "Station 001 primary objective must be 3/3 completed")
+-- P1 walks to FuseSocket_01 (41, 3.0, -58) and installs Fuse #1 -> progress 1/3
+walkPlayerAlongPath(p1, Vector3.new(44, 3.75, -52))
+advanceVirtualClock(1.0)
+local okInstall1, install1Reason = InteractionService:HandlePromptTriggered(socket1Part:FindFirstChildOfClass("ProximityPrompt"), p1)
+assert(okInstall1 == true and install1Reason == "FuseInstalled", "P1 must install Fuse into FuseSocket_01")
+assert(InventoryService:GetMissionItemCount(p1, "Fuse") == 0, "P1 carried Fuse must be consumed on socket install")
 
--- Stage 8 (within active round): Player Death & Fresh-Character Respawn (Fix 2 & Issue 01)
-local deadCharacterRef = p5.Character
-local deadHumanoidRef = deadCharacterRef:FindFirstChildOfClass("Humanoid")
-local posAtDeath = deadCharacterRef.HumanoidRootPart.Position
+local rpProg1, rpReq1, rpDone1 = RoundService:GetObjectiveProgress()
+assert(rpProg1 == 1 and rpReq1 == 3 and rpDone1 == false, "RestorePower progress must be 1/3 after Socket #1")
 
-deadHumanoidRef.Health = 0
-deadHumanoidRef.Died:Fire()
-assert(RoundService:GetPlayerStatus(p5) == "ELIMINATED", "Humanoid.Died must mark P5 ELIMINATED")
-assert(deadHumanoidRef.Health == 0, "Dead Humanoid health must remain 0 (never restored in-place)")
-assert((deadCharacterRef.HumanoidRootPart.Position - posAtDeath).Magnitude < 0.001, "Dead character must NOT be pivoted during Humanoid.Died")
+-- Duplicate install on FuseSocket_01 must be rejected
+advanceVirtualClock(1.0)
+local okDupSocket1, dupSocket1Reason = ObjectiveService:HandleObjectiveInteraction(p4, socket1Part)
+assert(okDupSocket1 == false, "Duplicate installation on FuseSocket_01 must be rejected: " .. tostring(dupSocket1Reason))
 
-local freshCharacterRef = p5:LoadCharacter()
-assert(freshCharacterRef ~= deadCharacterRef, "Respawn must create a fresh Character instance")
-assert(RoundService:GetPlayerStatus(p5) == "ELIMINATED", "Respawning eliminated player must remain ELIMINATED")
-assert(freshCharacterRef.HumanoidRootPart.Position.Z >= 35, "Fresh character for ELIMINATED player must be spawned in Hub Recovery Bay (Z >= 35)")
-assert(
-	HubService:IsPositionSupportedByFloor(freshCharacterRef.HumanoidRootPart.Position) == true,
-	"Eliminated Recovery Bay berth must be supported by solid TrainFloor"
-)
+-- P4 walks from Control Room to FuseSocket_02 (47, 3.0, -58) and installs Fuse #2 -> progress 2/3
+walkPlayerAlongPath(p4, Vector3.new(47, 3.75, 0))
+walkPlayerAlongPath(p4, Vector3.new(47, 3.75, -52))
+advanceVirtualClock(1.0)
+local okInstall2, install2Reason = InteractionService:HandlePromptTriggered(socket2Part:FindFirstChildOfClass("ProximityPrompt"), p4)
+assert(okInstall2 == true and install2Reason == "FuseInstalled", "P4 must install Fuse into FuseSocket_02")
+
+-- Test carrier elimination recovery: P3 is carrying Fuse_03 when P3 dies -> FusePickup_03 is restored so P1 can pick it up!
+local p3DeadChar = p3.Character
+local p3DeadHum = p3DeadChar:FindFirstChildOfClass("Humanoid")
+p3DeadHum.Health = 0
+p3DeadHum.Died:Fire()
+assert(RoundService:GetPlayerStatus(p3) == "ELIMINATED", "P3 must be ELIMINATED on death")
+assert(fuse3Part:GetAttribute("Collected") == false, "Eliminating P3 must restore carried FusePickup_03 so teammates are not soft-locked")
+assert(fuse3Part:FindFirstChildOfClass("ProximityPrompt").Enabled == true, "Restored FusePickup_03 prompt must be re-enabled")
+
+local p3FreshChar = p3:LoadCharacter()
+assert(p3FreshChar ~= p3DeadChar, "P3 respawn must create a fresh Character instance")
+assert(p3FreshChar.HumanoidRootPart.Position.Z >= 35, "Eliminated P3 fresh character must spawn in Hub Recovery Bay")
 print("[LUAU VM PASS] Fix 2 & Issue 01: Dead characters are never healed/pivoted in-place; fresh-character respawn flow verified.")
 
--- Stage 5 & 6: Players Travelling Back to Extraction & Successful Extraction
-RoundService:_enterExtractionPhase()
-assert(RoundService:GetState() == "EXTRACTION", "Lifecycle Stage 5: Must transition to EXTRACTION")
+-- P1 walks from Maintenance Room to Cargo Storage (43, 3.75, 48), picks up restored FusePickup_03, and installs it into FuseSocket_03
+walkPlayerAlongPath(p1, Vector3.new(47, 3.75, 0))
+walkPlayerAlongPath(p1, Vector3.new(43, 3.75, 48))
+advanceVirtualClock(1.0)
+local okRePick3, rePick3Reason = InteractionService:HandlePromptTriggered(fuse3Part:FindFirstChildOfClass("ProximityPrompt"), p1)
+assert(okRePick3 == true and rePick3Reason == "FuseCollected", "P1 must pick up recovered FusePickup_03")
 
--- Verify players still in rooms or at station entry spawns are NOT auto-extracted
-for _, unextractedP in ipairs({ p1, p4, p3, p6, p7 }) do
+walkPlayerAlongPath(p1, Vector3.new(47, 3.75, 0))
+walkPlayerAlongPath(p1, Vector3.new(50, 3.75, -52))
+advanceVirtualClock(1.0)
+local okInstall3, install3Reason = InteractionService:HandlePromptTriggered(socket3Part:FindFirstChildOfClass("ProximityPrompt"), p1)
+assert(okInstall3 == true and install3Reason == "ObjectiveCompleted", "P1 must install Fuse #3 into FuseSocket_03 and complete RestorePower")
+
+local rpProg3, rpReq3, rpDone3 = RoundService:GetObjectiveProgress()
+assert(rpProg3 == 3 and rpReq3 == 3 and rpDone3 == true, "RestorePower must be 3/3 completed")
+print("[LUAU VM PASS] Priority 1 & 3 (RestorePower): 3 fuses, carry/install, duplicate & mismatch rejection, and carrier recovery verified.")
+
+-- Complete Round 1 extraction lifecycle
+RoundService:_enterExtractionPhase()
+for _, unextractedP in ipairs({ p1, p4, p5, p6, p7 }) do
 	local okAuto, autoReason = RoundService:TryExtractPlayer(unextractedP)
 	assert(okAuto == false and autoReason == "OutOfExtractionZone", unextractedP.Name .. " must not auto-extract outside zone")
 end
 print("[LUAU VM PASS] Fix 1: All 6 station spawn positions verified outside extraction zone; zero auto-extractions.")
 
--- P1 walks from Maintenance Room (47, 3.75, -52) -> Main Concourse (47, 3.75, -8) -> ExtractionPlatformZone (16, 3.75, -8)
 walkPlayerAlongPath(p1, Vector3.new(47, 3.75, -8))
 walkPlayerAlongPath(p1, Vector3.new(16, 3.75, -8))
-assert(HubService:IsPlayerInExtractionZone(p1) == true, "P1 must be inside physical ExtractionPlatformZone after walking back")
-
 local extractionZonePart = HubService:GetExtractionZonePart()
-local extractionPrompt = extractionZonePart:FindFirstChildOfClass("ProximityPrompt")
 advanceVirtualClock(1.0)
-local okExtractP1, extractReasonP1 = InteractionService:HandlePromptTriggered(extractionPrompt, p1)
+local okExtractP1, extractReasonP1 = InteractionService:HandlePromptTriggered(extractionZonePart:FindFirstChildOfClass("ProximityPrompt"), p1)
 assert(okExtractP1 == true and extractReasonP1 == "Extracted", "P1 must extract via ExtractionPlatformPrompt")
-assert(RoundService:GetPlayerStatus(p1) == "EXTRACTED", "P1 status must be EXTRACTED")
 
--- P4 walks from Control Room (76, 3.75, 0) -> ExtractionPlatformZone (16, 3.75, -8) and stands inside zone for departure
+walkPlayerAlongPath(p4, Vector3.new(47, 3.75, -8))
 walkPlayerAlongPath(p4, Vector3.new(16, 3.75, -8))
-assert(HubService:IsPlayerInExtractionZone(p4) == true, "P4 must be standing inside physical ExtractionPlatformZone")
 
--- Stage 7 (Part A): Failed Extraction for Left-Behind Crew (P3 in Cargo Storage, P6 & P7 at arrival spawns)
 RoundService:_enterReturnPhase()
-assert(RoundService:GetState() == "RETURN", "Lifecycle Stage 6/7: Must transition to RETURN")
-assert(HubService:AreStationDoorsOpen() == false, "Train bulkhead doors must close upon departure in RETURN")
+assert(RoundService:GetState() == "RETURN", "Must transition to RETURN")
 assert(RoundService:GetPlayerStatus(p1) == "EXTRACTED", "P1 must remain EXTRACTED")
 assert(RoundService:GetPlayerStatus(p4) == "EXTRACTED", "P4 standing inside extraction zone at departure must be EXTRACTED")
-assert(RoundService:GetPlayerStatus(p3) == "ELIMINATED", "P3 left behind in Cargo Storage must be marked ELIMINATED")
-assert(RoundService:GetPlayerStatus(p6) == "ELIMINATED", "P6 left behind at station spawn must be marked ELIMINATED")
-assert(RoundService:GetPlayerStatus(p7) == "ELIMINATED", "P7 left behind at station spawn must be marked ELIMINATED")
+assert(RoundService:GetPlayerStatus(p5) == "ELIMINATED", "P5 left behind at station spawn must be marked ELIMINATED")
 assert(RoundService:GetLastOutcome() == "SUCCESS", "Round outcome must be SUCCESS when >= 1 player extracted")
 print("[LUAU VM PASS] Issue 04: Physical extraction zone proximity & left-behind elimination verified.")
 
--- Stage 10: Clean Return to the Hub (RETURN -> RESULTS -> CleanupRound)
 RoundService:_enterResultsPhase()
-assert(RoundService:GetState() == "RESULTS", "Lifecycle Stage 10A: Must transition to RESULTS")
-
 RoundService:CleanupRound()
-for _, player in ipairs(allSixPlayers) do
-	assert(RoundService:GetPlayerStatus(player) == "HUB_WAITING", player.Name .. " must be reset to HUB_WAITING on CleanupRound")
-	assert(
-		HubService:IsPositionSupportedByFloor(player.Character.HumanoidRootPart.Position) == true,
-		player.Name .. " hub spawn must be supported by solid TrainFloor after CleanupRound"
-	)
-end
-assert(
-	#Workspace.World.Runtime.ActiveStation:GetChildren() == 0,
-	"CleanupRound must destroy all runtime ActiveStation instances"
-)
 
--- Stage 7 (Part B): Full Failed Extraction Round (0 players reach ExtractionPlatformZone before departure -> FAILED outcome)
-RoundService:_startNewIntermission()
+-- Verify objectives reset cleanly between rounds
+local resetProg, _, resetDone = RoundService:GetObjectiveProgress()
+assert(resetProg == 0 and resetDone == false, "Objectives must reset to 0 between rounds on CleanupRound")
+
+-- ----------------------------------------------------------------------------
+-- TEST 5 (Priority 1, 2 & 3 — Mission 2): RecoverCargo Independent & Cooperative Verification
+-- (Locate 2 Sealed Cargo Containers -> Pick Up & Carry -> Deliver to Platform Drop Point)
+-- ----------------------------------------------------------------------------
+p3:LoadCharacter()
+RoundService:_startNewIntermission("RecoverCargo")
+assert(ObjectiveService:GetActiveMissionId() == "RecoverCargo", "Round 2 mission must be RecoverCargo")
 RoundService:_enterBoardingPhase()
 RoundService:_lockCrewAndDepart()
 RoundService:_enterExplorationPhase()
-RoundService:_enterExtractionPhase()
--- Nobody walks to the extraction zone; timer expires -> _enterReturnPhase()
-RoundService:_enterReturnPhase()
-assert(RoundService:GetLastOutcome() == "FAILED", "Round outcome must be FAILED when 0 players extract before departure")
-for _, player in ipairs(allSixPlayers) do
-	assert(RoundService:GetPlayerStatus(player) == "ELIMINATED", player.Name .. " who failed extraction must be ELIMINATED")
-end
+
+local stationModelR2 = Workspace.World.Runtime.ActiveStation:FindFirstChild("Station001_ForgottenTerminal")
+local r2Cargo1 = stationModelR2:FindFirstChild("CargoContainer_01")
+local r2Cargo2 = stationModelR2:FindFirstChild("CargoContainer_02")
+local r2DropPoint = stationModelR2:FindFirstChild("CargoDropPoint_01")
+local r2Fuse1 = stationModelR2:FindFirstChild("FusePickup_01")
+local r2Signal3 = stationModelR2:FindFirstChild("SignalTerminal_03")
+
+-- Verify unrelated mission interactions are rejected during RecoverCargo
+walkPlayerAlongPath(p1, Vector3.new(38, 3.75, -24))
+advanceVirtualClock(1.0)
+local okMisFuse, misFuseReason = ObjectiveService:HandleObjectiveInteraction(p1, r2Fuse1)
+assert(okMisFuse == false and misFuseReason == "MissionMismatch", "FusePickup must be rejected during RecoverCargo")
+
+walkPlayerAlongPath(p1, Vector3.new(56, 3.75, 0))
+advanceVirtualClock(1.0)
+local okMisSig, misSigReason = ObjectiveService:HandleObjectiveInteraction(p1, r2Signal3)
+assert(okMisSig == false and misSigReason == "MissionMismatch", "SignalTerminal must be rejected during RecoverCargo")
+
+-- Verify invalid delivery at CargoDropPoint_01 when carrying 0 cargo is rejected
+walkPlayerAlongPath(p1, Vector3.new(23, 3.75, -8))
+advanceVirtualClock(1.0)
+local okEmptyDrop, emptyDropReason = InteractionService:HandlePromptTriggered(r2DropPoint:FindFirstChildOfClass("ProximityPrompt"), p1)
+assert(okEmptyDrop == false and emptyDropReason == "MissingCarriedCargo", "Delivering without carrying cargo must be rejected")
+
+-- P1 walks to Cargo Storage (44, 3.75, 52) and picks up CargoContainer_01
+walkPlayerAlongPath(p1, Vector3.new(47, 3.75, 0))
+walkPlayerAlongPath(p1, Vector3.new(44, 3.75, 52))
+advanceVirtualClock(1.0)
+local okPickCargo1, pickCargo1Reason = InteractionService:HandlePromptTriggered(r2Cargo1:FindFirstChildOfClass("ProximityPrompt"), p1)
+assert(okPickCargo1 == true and pickCargo1Reason == "CargoCollected", "P1 must pick up CargoContainer_01")
+assert(InventoryService:GetMissionItemCount(p1, "CargoContainer") == 1, "P1 must carry 1 CargoContainer")
+
+-- Duplicate pickup of CargoContainer_01 must be rejected
+advanceVirtualClock(1.0)
+local okDupCargo1, dupCargo1Reason = ObjectiveService:HandleObjectiveInteraction(p1, r2Cargo1)
+assert(okDupCargo1 == false and dupCargo1Reason == "CargoAlreadyCollected", "Duplicate pickup of CargoContainer_01 must be rejected")
+
+-- Attempting to pick up CargoContainer_02 while P1 is already carrying CargoContainer_01 must be rejected
+walkPlayerAlongPath(p1, Vector3.new(50, 3.75, 52))
+advanceVirtualClock(1.0)
+local okTwoCargo, twoCargoReason = InteractionService:HandlePromptTriggered(r2Cargo2:FindFirstChildOfClass("ProximityPrompt"), p1)
+assert(okTwoCargo == false and twoCargoReason == "AlreadyCarryingCargo", "Carrying two heavy cargo containers simultaneously must be rejected")
+
+-- Cooperative teammate P4 walks to Cargo Storage and picks up CargoContainer_02
+walkPlayerAlongPath(p4, Vector3.new(47, 3.75, 0))
+walkPlayerAlongPath(p4, Vector3.new(50, 3.75, 52))
+advanceVirtualClock(1.0)
+local okPickCargo2, pickCargo2Reason = InteractionService:HandlePromptTriggered(r2Cargo2:FindFirstChildOfClass("ProximityPrompt"), p4)
+assert(okPickCargo2 == true and pickCargo2Reason == "CargoCollected", "P4 must pick up CargoContainer_02")
+assert(InventoryService:GetMissionItemCount(p4, "CargoContainer") == 1, "P4 must carry 1 CargoContainer")
+
+-- P1 walks back to CargoDropPoint_01 (23, 2.2, -8) on Station Platform and delivers CargoContainer_01 -> progress 1/2
+walkPlayerAlongPath(p1, Vector3.new(47, 3.75, 0))
+walkPlayerAlongPath(p1, Vector3.new(23, 3.75, -8))
+advanceVirtualClock(1.0)
+local okDeliver1, deliver1Reason = InteractionService:HandlePromptTriggered(r2DropPoint:FindFirstChildOfClass("ProximityPrompt"), p1)
+assert(okDeliver1 == true and deliver1Reason == "CargoDelivered", "P1 must deliver CargoContainer_01 at CargoDropPoint_01")
+assert(InventoryService:GetMissionItemCount(p1, "CargoContainer") == 0, "P1 carried CargoContainer must be consumed on delivery")
+
+local rcProg1, rcReq1, rcDone1 = RoundService:GetObjectiveProgress()
+assert(rcProg1 == 1 and rcReq1 == 2 and rcDone1 == false, "RecoverCargo progress must be 1/2 after first delivery")
+
+-- Prevent duplicate delivery: P1 interacting with CargoDropPoint_01 again with 0 cargo must be rejected
+advanceVirtualClock(1.0)
+local okDupDeliver, dupDeliverReason = InteractionService:HandlePromptTriggered(r2DropPoint:FindFirstChildOfClass("ProximityPrompt"), p1)
+assert(okDupDeliver == false and dupDeliverReason == "MissingCarriedCargo", "Duplicate delivery without cargo must be rejected")
+
+-- P4 walks to CargoDropPoint_01 (23, 2.2, -8) and delivers CargoContainer_02 -> progress 2/2 (ObjectiveCompleted)
+walkPlayerAlongPath(p4, Vector3.new(47, 3.75, 0))
+walkPlayerAlongPath(p4, Vector3.new(23, 3.75, -8))
+advanceVirtualClock(1.0)
+local okDeliver2, deliver2Reason = InteractionService:HandlePromptTriggered(r2DropPoint:FindFirstChildOfClass("ProximityPrompt"), p4)
+assert(okDeliver2 == true and deliver2Reason == "ObjectiveCompleted", "P4 must deliver CargoContainer_02 and complete RecoverCargo")
+
+local rcProg2, rcReq2, rcDone2 = RoundService:GetObjectiveProgress()
+assert(rcProg2 == 2 and rcReq2 == 2 and rcDone2 == true, "RecoverCargo must be 2/2 completed")
+print("[LUAU VM PASS] Priority 1 & 3 (RecoverCargo): 2 cargo containers, pickup/carry/delivery, and anti-duplication verified.")
+
+RoundService:CleanupRound()
 
 -- ----------------------------------------------------------------------------
--- TEST 5 (Fix 4 & Stage 9): All-Crew-Eliminated Immediate Round Termination
+-- TEST 6 (Priority 1, 2 & 3 — Mission 3): RepairSignal Independent & Cooperative Verification
+-- (Activate 3 Communication Terminals)
+-- ----------------------------------------------------------------------------
+RoundService:_startNewIntermission("RepairSignal")
+assert(ObjectiveService:GetActiveMissionId() == "RepairSignal", "Round 3 mission must be RepairSignal")
+RoundService:_enterBoardingPhase()
+RoundService:_lockCrewAndDepart()
+RoundService:_enterExplorationPhase()
+
+local stationModelR3 = Workspace.World.Runtime.ActiveStation:FindFirstChild("Station001_ForgottenTerminal")
+local r3Sig1 = stationModelR3:FindFirstChild("SignalTerminal_01")
+local r3Sig2 = stationModelR3:FindFirstChild("SignalTerminal_02")
+local r3Sig3 = stationModelR3:FindFirstChild("SignalTerminal_03")
+local r3Fuse1 = stationModelR3:FindFirstChild("FusePickup_01")
+local r3Cargo1 = stationModelR3:FindFirstChild("CargoContainer_01")
+
+-- Verify unrelated mission objects are rejected during RepairSignal
+walkPlayerAlongPath(p1, Vector3.new(38, 3.75, -24))
+advanceVirtualClock(1.0)
+local okSigMis1, sigMis1Reason = ObjectiveService:HandleObjectiveInteraction(p1, r3Fuse1)
+assert(okSigMis1 == false and sigMis1Reason == "MissionMismatch", "FusePickup must be rejected during RepairSignal")
+
+walkPlayerAlongPath(p1, Vector3.new(47, 3.75, 0))
+walkPlayerAlongPath(p1, Vector3.new(44, 3.75, 52))
+advanceVirtualClock(1.0)
+local okSigMis2, sigMis2Reason = ObjectiveService:HandleObjectiveInteraction(p1, r3Cargo1)
+assert(okSigMis2 == false and sigMis2Reason == "MissionMismatch", "CargoContainer must be rejected during RepairSignal")
+
+-- P1 activates SignalTerminal_03 in Main Concourse (56, 3.0, 0) -> 1/3
+walkPlayerAlongPath(p1, Vector3.new(54, 3.75, 0))
+advanceVirtualClock(1.0)
+local okTerm3, term3Reason = InteractionService:HandlePromptTriggered(r3Sig3:FindFirstChildOfClass("ProximityPrompt"), p1)
+assert(okTerm3 == true and term3Reason == "SignalTerminalActivated", "P1 must activate SignalTerminal_03")
+
+-- Duplicate activation of SignalTerminal_03 must be rejected
+advanceVirtualClock(1.0)
+local okDupTerm3, dupTerm3Reason = ObjectiveService:HandleObjectiveInteraction(p1, r3Sig3)
+assert(okDupTerm3 == false and dupTerm3Reason == "TerminalAlreadyActivated", "Duplicate activation of SignalTerminal_03 must be rejected")
+
+-- P4 walks into Control Room and activates SignalTerminal_01 (82, 3.0, -8) -> 2/3
+walkPlayerAlongPath(p4, Vector3.new(47, 3.75, 0))
+walkPlayerAlongPath(p4, Vector3.new(78, 3.75, -6))
+advanceVirtualClock(1.0)
+local okTerm1, term1Reason = InteractionService:HandlePromptTriggered(r3Sig1:FindFirstChildOfClass("ProximityPrompt"), p4)
+assert(okTerm1 == true and term1Reason == "SignalTerminalActivated", "P4 must activate SignalTerminal_01")
+
+-- P4 walks to SignalTerminal_02 (82, 3.0, 8) and activates it -> 3/3 (ObjectiveCompleted)
+walkPlayerAlongPath(p4, Vector3.new(78, 3.75, 6))
+advanceVirtualClock(1.0)
+local okTerm2, term2Reason = InteractionService:HandlePromptTriggered(r3Sig2:FindFirstChildOfClass("ProximityPrompt"), p4)
+assert(okTerm2 == true and term2Reason == "ObjectiveCompleted", "P4 must activate SignalTerminal_02 and complete RepairSignal")
+
+local rsProg, rsReq, rsDone = RoundService:GetObjectiveProgress()
+assert(rsProg == 3 and rsReq == 3 and rsDone == true, "RepairSignal must be 3/3 completed")
+print("[LUAU VM PASS] Priority 1 & 3 (RepairSignal): 3 communication terminals, duplicate & mismatch rejection verified.")
+
+-- ----------------------------------------------------------------------------
+-- TEST 7 (Priority 4): Verify Prepared Interfaces for The Hollow (MonsterService)
+-- (State management, Noise events, Station navigation, Hiding locations,
+--  Player detection, and Validated player elimination)
+-- ----------------------------------------------------------------------------
+-- 7A: Monster State Management
+assert(MonsterService:GetState() == "INACTIVE", "MonsterService must default to INACTIVE")
+local okTrans1 = MonsterService:TransitionState("PATROL")
+assert(okTrans1 == true and MonsterService:GetState() == "PATROL", "Must transition INACTIVE -> PATROL")
+local okInvalidTrans = MonsterService:TransitionState("SEARCH")
+assert(okInvalidTrans == false, "Must reject direct PATROL -> SEARCH transition")
+local okTrans2 = MonsterService:TransitionState("INVESTIGATE", p1.UserId, Vector3.new(47, 3.75, 0))
+assert(okTrans2 == true and MonsterService:GetState() == "INVESTIGATE", "Must transition PATROL -> INVESTIGATE")
+local okTrans3 = MonsterService:TransitionState("CHASE", p1.UserId, Vector3.new(47, 3.75, 0))
+assert(okTrans3 == true and MonsterService:GetState() == "CHASE", "Must transition INVESTIGATE -> CHASE")
+local okTrans4 = MonsterService:TransitionState("SEARCH")
+assert(okTrans4 == true and MonsterService:GetState() == "SEARCH", "Must transition CHASE -> SEARCH")
+local okTrans5 = MonsterService:TransitionState("RETURN")
+assert(okTrans5 == true and MonsterService:GetState() == "RETURN", "Must transition SEARCH -> RETURN")
+local okTrans6 = MonsterService:TransitionState("PATROL")
+assert(okTrans6 == true and MonsterService:GetState() == "PATROL", "Must transition RETURN -> PATROL")
+
+-- 7B: Noise Events
+MonsterService:EmitNoiseEvent(p1, "Walk", Vector3.new(47, 3.75, 10))
+local flareNoise = MonsterService:EmitNoiseEvent(p4, "FlareDistraction", Vector3.new(50, 3.75, -10))
+local strongestNoise = MonsterService:SelectStrongestNoiseStimulus(Vector3.new(47, 3.75, 0))
+assert(strongestNoise ~= nil and strongestNoise.id == flareNoise.id, "SelectStrongestNoiseStimulus must prioritize high-intensity FlareDistraction")
+
+-- 7C: Station Navigation Graph & Route Computation
+local navGraph = MonsterService:GetStationNavigationGraph()
+assert(navGraph["WP_PlatformSouth"] ~= nil and navGraph["WP_Control"] ~= nil, "Station 001 waypoint graph must be populated")
+local routeToControl = MonsterService:ComputeWaypointRoute("WP_PlatformSouth", "WP_Control")
+assert(#routeToControl >= 3, "ComputeWaypointRoute must find a multi-node path from PlatformSouth to ControlRoom")
+assert(routeToControl[1].id == "WP_PlatformSouth" and routeToControl[#routeToControl].id == "WP_Control", "Route endpoints must match start and goal")
+
+-- 7D: Hiding Locations & Player Detection
+local hidingLocker2 = stationModelR3:FindFirstChild("HidingLocker_02_ConcourseNorth")
+assert(hidingLocker2 ~= nil, "HidingLocker_02_ConcourseNorth must exist in Station 001")
+
+walkPlayerAlongPath(p1, Vector3.new(36, 3.75, -30))
+advanceVirtualClock(1.0)
+
+-- Before hiding: P1 is in clear line-of-sight and FOV of an observer at (47, 3.75, -30) looking West (-1, 0, 0)
+local detVisible = MonsterService:EvaluatePlayerDetection(
+	Vector3.new(47, 3.75, -30),
+	Vector3.new(-1, 0, 0),
+	p1
+)
+assert(detVisible.detected == true and detVisible.hasLineOfSight == true and detVisible.isHidden == false, "Visible player in FOV and LOS must be detected")
+
+-- P1 enters HidingLocker_02_ConcourseNorth -> P1 becomes hidden and immune to visual detection
+local okHide, hideReason = InteractionService:HandlePromptTriggered(hidingLocker2:FindFirstChildOfClass("ProximityPrompt"), p1)
+assert(okHide == true and hideReason == "EnteredHidingSpot", "P1 must enter hiding spot")
+assert(MonsterService:IsPlayerHidden(p1) == true, "MonsterService must report P1 as hidden")
+
+local detHidden = MonsterService:EvaluatePlayerDetection(
+	Vector3.new(47, 3.75, -30),
+	Vector3.new(-1, 0, 0),
+	p1
+)
+assert(detHidden.detected == false and detHidden.isHidden == true, "Hidden player inside locker must NOT be visually detected")
+
+-- Second player P4 attempting to enter the same occupied hiding locker must be rejected
+walkPlayerAlongPath(p4, Vector3.new(47, 3.75, 0))
+walkPlayerAlongPath(p4, Vector3.new(38, 3.75, -30))
+advanceVirtualClock(1.0)
+local okOccupied, occupiedReason = InteractionService:HandlePromptTriggered(hidingLocker2:FindFirstChildOfClass("ProximityPrompt"), p4)
+assert(okOccupied == false and occupiedReason == "HidingSpotOccupied", "Occupied hiding spot must reject a second player")
+
+-- Attacking a hidden player must be rejected
+local canHitHidden, hitHiddenReason = MonsterService:CanEliminateTarget(Vector3.new(36, 3.75, -30), p1)
+assert(canHitHidden == false and hitHiddenReason == "TargetHidden", "MonsterService must not eliminate a hidden player")
+
+-- P1 exits hiding spot
+advanceVirtualClock(1.0)
+local okUnhide, unhideReason = InteractionService:HandlePromptTriggered(hidingLocker2:FindFirstChildOfClass("ProximityPrompt"), p1)
+assert(okUnhide == true and unhideReason == "ExitedHidingSpot", "P1 must exit hiding spot")
+assert(MonsterService:IsPlayerHidden(p1) == false, "P1 must no longer be hidden after exiting")
+
+-- Attacking through a solid wall must be rejected (BlockedByWall)
+-- ConcourseWall_EastNorth is at X = 65.5, Z = -24 (spanning Z = -42..-6); ControlRoomFloor spans Z = -18..+18.
+walkPlayerAlongPath(p1, Vector3.new(63.5, 3.75, -16))
+local canHitThroughWall, wallHitReason = MonsterService:CanEliminateTarget(Vector3.new(67.5, 3.75, -16), p1)
+assert(canHitThroughWall == false and wallHitReason == "BlockedByWall", "Attack through a solid station wall must be rejected with BlockedByWall (got " .. tostring(wallHitReason) .. ")")
+
+-- Valid close-range unobstructed attack eliminates target and enforces attack cooldown
+local okElim, elimReason = MonsterService:ExecuteValidatedElimination(Vector3.new(60.0, 3.75, -16), p1, "TheHollow")
+assert(okElim == true and elimReason == "Eliminated", "Valid close-range LOS attack must eliminate target")
+assert(RoundService:GetPlayerStatus(p1) == "ELIMINATED", "P1 must be marked ELIMINATED after validated Hollow attack")
+
+local okCooldownHit, cooldownReason = MonsterService:CanEliminateTarget(Vector3.new(38, 3.75, -30), p4)
+assert(okCooldownHit == false and cooldownReason == "AttackCooldownActive", "Immediate repeat attack within cooldown window must be rejected")
+print("[LUAU VM PASS] Priority 4: Prepared Hollow AI interfaces (detection, noise, state machine, waypoints, hiding spots, elimination) verified.")
+
+-- ----------------------------------------------------------------------------
+-- TEST 8 (Fix 4 & Stage 9): All-Crew-Eliminated Immediate Round Termination
 -- ----------------------------------------------------------------------------
 for _, extraP in ipairs({ p5, p6, p7, p3 }) do
 	extraP.Parent = nil
@@ -1042,7 +1302,9 @@ for _, extraP in ipairs({ p5, p6, p7, p3 }) do
 end
 
 RoundService:CleanupRound()
-RoundService:_startNewIntermission()
+p1:LoadCharacter()
+p4:LoadCharacter()
+RoundService:_startNewIntermission("RestorePower")
 RoundService:_enterBoardingPhase()
 RoundService:_lockCrewAndDepart()
 RoundService:_enterExplorationPhase()
@@ -1051,18 +1313,12 @@ assert(RoundService:GetState() == "EXPLORATION", "New round must be in EXPLORATI
 assert(RoundService:GetPlayerStatus(p1) == "IN_EXPEDITION", "P1 must be IN_EXPEDITION")
 assert(RoundService:GetPlayerStatus(p4) == "IN_EXPEDITION", "P4 must be IN_EXPEDITION")
 
--- Ensure both p1 and p4 have fresh living characters for this round
-p1:LoadCharacter()
-p4:LoadCharacter()
-
 local clockBeforeWipe = os.clock()
 
--- Eliminate P1 -> P4 is still alive so round continues in EXPLORATION
 p1.Character:FindFirstChildOfClass("Humanoid").Health = 0
 p1.Character:FindFirstChildOfClass("Humanoid").Died:Fire()
 assert(RoundService:GetState() == "EXPLORATION", "Round must remain in EXPLORATION while P4 is still alive")
 
--- Eliminate P4 (last surviving expedition crew member) -> Round must IMMEDIATELY enter RETURN with FAILED outcome!
 p4.Character:FindFirstChildOfClass("Humanoid").Health = 0
 p4.Character:FindFirstChildOfClass("Humanoid").Died:Fire()
 

@@ -3,7 +3,7 @@
 	Bootstrap.server.lua
 	Authoritative server bootstrap for NIGHTLINE: LAST TRAIN (Section 9.4 & Section 10).
 	1. Creates and validates ReplicatedStorage.Remotes.
-	2. Initializes server services in dependency order (including MovementService).
+	2. Initializes server services in dependency order (including ObjectiveService and MonsterService).
 	3. Starts all services and logs readiness.
 ]]
 
@@ -18,6 +18,8 @@ local SecurityService = require(ServicesFolder.SecurityService)
 local MovementService = require(ServicesFolder.MovementService)
 local HubService = require(ServicesFolder.HubService)
 local InventoryService = require(ServicesFolder.InventoryService)
+local ObjectiveService = require(ServicesFolder.ObjectiveService)
+local MonsterService = require(ServicesFolder.MonsterService)
 local RoundService = require(ServicesFolder.RoundService)
 local InteractionService = require(ServicesFolder.InteractionService)
 
@@ -47,21 +49,40 @@ local function bootstrapServer()
 		securityService = SecurityService,
 	})
 
+	ObjectiveService:Init({
+		remotes = remotes,
+		securityService = SecurityService,
+		hubService = HubService,
+		inventoryService = InventoryService,
+	})
+
+	MonsterService:Init({
+		securityService = SecurityService,
+		hubService = HubService,
+	})
+
 	RoundService:Init({
 		remotes = remotes,
 		securityService = SecurityService,
 		hubService = HubService,
 		inventoryService = InventoryService,
 		movementService = MovementService,
+		objectiveService = ObjectiveService,
+		monsterService = MonsterService,
 	})
 
 	MovementService:SetRoundService(RoundService)
 	InventoryService:SetRoundService(RoundService)
+	ObjectiveService:SetRoundService(RoundService)
+	ObjectiveService:SetMonsterService(MonsterService)
+	MonsterService:SetRoundService(RoundService)
 
 	InteractionService:Init({
 		securityService = SecurityService,
 		inventoryService = InventoryService,
 		roundService = RoundService,
+		objectiveService = ObjectiveService,
+		monsterService = MonsterService,
 	})
 
 	-- 3. Start services
@@ -69,10 +90,14 @@ local function bootstrapServer()
 	MovementService:Start()
 	HubService:Start()
 	InventoryService:Start()
+	ObjectiveService:Start()
+	MonsterService:Start()
 	RoundService:Start()
 	InteractionService:Start()
 
-	print("[NIGHTLINE Server] All Milestone 0 & Milestone 1 services initialized and running.")
+	print(
+		"[NIGHTLINE Server] All server services (including ObjectiveService & MonsterService interfaces) initialized and running."
+	)
 end
 
 local ok, err = pcall(function()

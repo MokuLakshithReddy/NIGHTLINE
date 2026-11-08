@@ -1,14 +1,12 @@
 --!strict
 --[[
 	RoundService.lua
-	Authoritative server-side Round State Machine for NIGHTLINE: LAST TRAIN (Section 3.2, 3.3, 3.4 & Milestone 1).
-	Includes fixes for:
-	- Remediation #1: All 6 active station spawns are strictly outside the physical Extraction Zone.
-	- Remediation #2 (Issue 01): State-aware fresh-character respawn flow. Never heals or pivots a dead Humanoid inside Humanoid.Died.
-	- Issue 02: Explicit 1..6 spawn-slot allocation on join and slot release on departure.
-	- Remediation #3 (Issue 03): Periodic MovementService 3D (horizontal + vertical) sanity validation tick.
-	- Remediation #4: Immediate round termination to RETURN (FAILED) when all active expedition players are eliminated, without waiting for the phase timer.
-	- Issue 04: Physical extraction zone proximity, survival, and eligibility validation.
+	Authoritative server-side Round State Machine for NIGHTLINE: LAST TRAIN (Section 3.2, 3.3, 3.4 & Priority 2).
+	Responsibilities:
+	- Owns round state machine, timers, crew roster, phase transitions, outcome, and cleanup orchestration.
+	- Delegates mission-specific objective mechanics and progress validation to ObjectiveService (Priority 2).
+	- Coordinates state-aware fresh-character respawning, spawn-slot allocation, 3D movement validation,
+	  physical extraction zone checks, and Hollow AI preparation hooks (MonsterService).
 ]]
 
 local Players = game:GetService("Players")
@@ -41,8 +39,6 @@ local RoundService: { [string]: any } = {
 	_lastOutcome = "PENDING" :: NetworkTypes.RoundOutcome,
 	_selectedStationId = GameConfig.DEFAULT_STATION_ID :: NetworkTypes.StationId,
 	_selectedMissionId = "RestorePower" :: NetworkTypes.MissionTemplateId,
-	_objectiveProgress = 0,
-	_objectiveCompleted = false,
 	_roster = {} :: { [number]: PlayerRosterEntry },
 	_activeExpeditionUserIds = {} :: { [number]: boolean },
 	_roundJanitor = Janitor.new(),
@@ -53,6 +49,8 @@ local RoundService: { [string]: any } = {
 	_hubService = nil :: any,
 	_inventoryService = nil :: any,
 	_movementService = nil :: any,
+	_objectiveService = nil :: any,
+	_monsterService = nil :: any,
 }
 
 function RoundService:Init(dependencies: {
@@ -61,12 +59,16 @@ function RoundService:Init(dependencies: {
 	hubService: any,
 	inventoryService: any,
 	movementService: any?,
+	objectiveService: any?,
+	monsterService: any?,
 })
 	self._remotes = dependencies.remotes
 	self._securityService = dependencies.securityService
 	self._hubService = dependencies.hubService
 	self._inventoryService = dependencies.inventoryService
 	self._movementService = dependencies.movementService
+	self._objectiveService = dependencies.objectiveService
+	self._monsterService = dependencies.monsterService
 
 	self._state = "WAITING"
 	self._roundNumber = 0
@@ -74,10 +76,16 @@ function RoundService:Init(dependencies: {
 	self._lastOutcome = "PENDING"
 	self._selectedStationId = GameConfig.DEFAULT_STATION_ID
 	self._selectedMissionId = ObjectiveConfig.OrderedTemplateIds[1]
-	self._objectiveProgress = 0
-	self._objectiveCompleted = false
 	table.clear(self._roster)
 	table.clear(self._activeExpeditionUserIds)
+end
+
+function RoundService:SetObjectiveService(objectiveService: any)
+	self._objectiveService = objectiveService
+end
+
+function RoundService:SetMonsterService(monsterService: any)
+	self._monsterService = monsterService
 end
 
 function RoundService:Start()
@@ -109,6 +117,27 @@ function RoundService:GetState(): NetworkTypes.RoundState
 	return self._state
 end
 
+function RoundService:GetSelectedMissionId(): NetworkTypes.MissionTemplateId
+	if self._objectiveService then
+		return self._objectiveService:GetActiveMissionId()
+	end
+	return self._selectedMissionId
+end
+
+function RoundService:SetSelectedMissionId(
+	missionId: NetworkTypes.MissionTemplateId
+): (boolean, string)
+	if not ObjectiveConfig.Templates[missionId] then
+		return false, "InvalidMissionId"
+	end
+	self._selectedMissionId = missionId
+	if self._objectiveService then
+		self._objectiveService:SetActiveMission(missionId)
+	end
+	self:_broadcastState()
+	return true, "MissionSelected"
+end
+
 function RoundService:GetLastOutcome(): NetworkTypes.RoundOutcome
 	return self._lastOutcome
 end
@@ -119,6 +148,10 @@ function RoundService:GetPlayerStatus(player: Player): NetworkTypes.PlayerRoundS
 		return "HUB_WAITING"
 	end
 	return entry.status
+end
+
+function RoundService:IsPlayerInActiveExpedition(player: Player): boolean
+	return self._activeExpeditionUserIds[player.UserId] == true
 end
 
 function RoundService:GetPlayerSpawnSlot(player: Player): number
@@ -141,7 +174,6 @@ function RoundService:_clearCharacterConnections(entry: PlayerRosterEntry)
 	table.clear(entry.characterConnections)
 end
 
--- Issue 01 & Issue 02: Explicit slot allocation and player-state-aware CharacterAdded spawning
 function RoundService:RegisterPlayer(player: Player): number
 	local existing = self._roster[player.UserId]
 	if existing then
@@ -201,9 +233,6 @@ function RoundService:RegisterPlayer(player: Player): number
 	return allocatedSlot
 end
 
--- Remediation #2: State-aware fresh-character respawn handler.
--- When a fresh character spawns via CharacterAdded, route it according to the player's authoritative status.
--- Never attempt to revive a dead Humanoid inside Humanoid.Died.
 function RoundService:HandleCharacterAdded(player: Player, character: Model)
 	local entry = self._roster[player.UserId]
 	if not entry then
@@ -215,8 +244,6 @@ function RoundService:HandleCharacterAdded(player: Player, character: Model)
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
 	if humanoid then
 		local diedConn = humanoid.Died:Connect(function()
-			-- Remediation #2: Only update authoritative player status and round state on death.
-			-- Do NOT restore Humanoid.Health or pivot the dead character inside Humanoid.Died.
 			if entry.status == "IN_EXPEDITION" then
 				self:EliminatePlayer(player, "CharacterDied", false)
 			end
@@ -228,7 +255,6 @@ function RoundService:HandleCharacterAdded(player: Player, character: Model)
 		return
 	end
 
-	-- Route the newly spawned (living) character strictly by authoritative player state and round state
 	if entry.status == "IN_EXPEDITION" then
 		if entry.diedDuringExpedition then
 			entry.status = "ELIMINATED"
@@ -242,20 +268,15 @@ function RoundService:HandleCharacterAdded(player: Player, character: Model)
 			self._hubService:SpawnPlayerInHub(player, entry.spawnSlot)
 		end
 	elseif entry.status == "ELIMINATED" then
-		-- Freshly respawned character of an eliminated player spawns in the Hub Recovery Bay
 		self._hubService:SpawnEliminatedPlayerInHub(player, entry.spawnSlot)
 		self:_broadcastPlayerStatuses()
 	elseif entry.status == "EXTRACTED" then
 		self._hubService:MoveCrewToBoardingBay({ player })
 	else
-		-- HUB_WAITING or BOARDED
 		self._hubService:SpawnPlayerInHub(player, entry.spawnSlot)
 	end
 end
 
--- Remediation #2 & #4: Authoritative player elimination during active expedition.
--- Does not heal or revive a dead character; only relocates living characters (e.g. left behind)
--- while dead characters wait for a fresh CharacterAdded respawn into the Recovery Bay.
 function RoundService:EliminatePlayer(
 	player: Player,
 	reason: string?,
@@ -277,7 +298,15 @@ function RoundService:EliminatePlayer(
 		self._movementService:ResetPlayerState(player)
 	end
 
-	-- Only relocate immediately if explicitly requested for a living character (e.g., left behind at station)
+	if self._monsterService then
+		self._monsterService:ClearPlayerHidingState(player.UserId)
+	end
+
+	-- Return any carried uninstalled fuses / undelivered cargo to Station 001 so teammates can complete the objective
+	if self._objectiveService then
+		self._objectiveService:OnPlayerEliminatedOrRemoved(player)
+	end
+
 	local shouldRelocateLiving = if relocateIfAlive ~= nil then relocateIfAlive else false
 	if shouldRelocateLiving and self._hubService then
 		self._hubService:SpawnEliminatedPlayerInHub(player, entry.spawnSlot)
@@ -295,7 +324,6 @@ function RoundService:EliminatePlayer(
 
 	self:_broadcastPlayerStatuses()
 
-	-- Remediation #4: Immediately terminate the active expedition phase if all active crew are now eliminated
 	if
 		self:_countLivingOrExtractedExpeditionPlayers() == 0
 		and (self._state == "TRAVEL" or self._state == "EXPLORATION" or self._state == "EXTRACTION")
@@ -312,7 +340,6 @@ function RoundService:EliminatePlayer(
 	return true, "Eliminated"
 end
 
--- Issue 04 & Remediation #1: Physical Extraction Zone validation and extraction registration
 function RoundService:TryExtractPlayer(player: Player): (boolean, string)
 	local security = self._securityService
 	if not security:ValidatePlayerInstance(player) then
@@ -358,6 +385,9 @@ function RoundService:TryExtractPlayer(player: Player): (boolean, string)
 	end
 
 	entry.status = "EXTRACTED"
+	if self._monsterService then
+		self._monsterService:ClearPlayerHidingState(player.UserId)
+	end
 	self._hubService:MoveCrewToBoardingBay({ player })
 	self:_broadcastPlayerStatuses()
 
@@ -377,9 +407,17 @@ function RoundService:UnregisterPlayer(player: Player)
 	if entry then
 		self:_clearCharacterConnections(entry)
 	end
+
+	if self._monsterService then
+		self._monsterService:ClearPlayerHidingState(userId)
+	end
+
+	if self._objectiveService then
+		self._objectiveService:OnPlayerEliminatedOrRemoved(player)
+	end
+
 	self._roster[userId] = nil
 
-	-- Issue 02: Release spawn slot on player departure
 	if self._hubService then
 		self._hubService:ReleaseSpawnSlot(userId)
 	end
@@ -391,7 +429,6 @@ function RoundService:UnregisterPlayer(player: Player)
 
 	self:_broadcastPlayerStatuses()
 
-	-- Section 3.3 & Remediation #4: If all active expedition players leave or none remain alive/extracted, terminate safely
 	if self:_isExpeditionPhase(self._state) then
 		if self:_countActiveExpeditionPlayers() == 0 then
 			warn(
@@ -490,83 +527,24 @@ function RoundService:HandleDestinationVote(player: Player, stationId: any): (bo
 	return true, "VoteRecorded"
 end
 
+-- Priority 2: Delegate objective interaction validation to ObjectiveService
 function RoundService:HandleStationObjectiveInteraction(
 	player: Player,
 	objectivePart: BasePart
 ): (boolean, string)
-	local security = self._securityService
-	if not security:ValidatePlayerInstance(player) then
-		return false, "InvalidPlayer"
+	if not self._objectiveService then
+		return false, "MissingObjectiveService"
 	end
-
-	if self._state ~= "EXPLORATION" and self._state ~= "EXTRACTION" then
-		return false, "InvalidPhase"
-	end
-
-	local entry = self._roster[player.UserId]
-	if not entry or not self._activeExpeditionUserIds[player.UserId] then
-		return false, "NotInActiveExpedition"
-	end
-
-	if entry.status ~= "IN_EXPEDITION" then
-		return false, "PlayerNotInExpedition"
-	end
-
-	local _, _, humanoid = security:GetValidatedCharacterRoot(player)
-	if not humanoid or humanoid.Health <= 0 then
-		return false, "PlayerNotAlive"
-	end
-
-	if objectivePart:GetAttribute("Completed") == true then
-		return false, "ObjectiveNodeAlreadyUsed"
-	end
-
-	objectivePart:SetAttribute("Completed", true)
-	local prompt = objectivePart:FindFirstChildOfClass("ProximityPrompt")
-	if prompt then
-		prompt.Enabled = false
-	end
-
-	local template = ObjectiveConfig.Templates[self._selectedMissionId]
-	local requiredProgress = if template then template.requiredProgress else 3
-
-	self._objectiveProgress = math.min(requiredProgress, self._objectiveProgress + 1)
-	if self._objectiveProgress >= requiredProgress then
-		self._objectiveCompleted = true
-	end
-
-	self:_broadcastObjectivePreview()
-
-	if self._objectiveCompleted then
-		self:BroadcastNotification(
-			"PrimaryObjectiveCompleted",
-			string.format(
-				"Primary objective completed (%d/%d)! Proceed to the Station 001 Extraction Platform.",
-				self._objectiveProgress,
-				requiredProgress
-			),
-			"Success"
-		)
-	else
-		self:BroadcastNotification(
-			"ObjectiveProgressUpdated",
-			string.format(
-				"%s progressed the station objective (%d/%d).",
-				player.DisplayName,
-				self._objectiveProgress,
-				requiredProgress
-			),
-			"Info"
-		)
-	end
-
-	return true, if self._objectiveCompleted then "ObjectiveCompleted" else "ObjectiveProgressed"
+	return self._objectiveService:HandleObjectiveInteraction(player, objectivePart)
 end
 
 function RoundService:GetObjectiveProgress(): (number, number, boolean)
+	if self._objectiveService then
+		return self._objectiveService:GetObjectiveProgress()
+	end
 	local template = ObjectiveConfig.Templates[self._selectedMissionId]
 	local requiredProgress = if template then template.requiredProgress else 3
-	return self._objectiveProgress, requiredProgress, self._objectiveCompleted
+	return 0, requiredProgress, false
 end
 
 function RoundService:_isExpeditionPhase(state: NetworkTypes.RoundState): boolean
@@ -686,7 +664,6 @@ function RoundService:_waitPhaseOrAbort(
 	local stepInterval = GameConfig.MOVEMENT_CHECK_INTERVAL
 
 	while os.clock() < deadline do
-		-- Remediation #4: If state transitioned externally (e.g., all-crew-eliminated triggered _enterReturnPhase), abort wait immediately
 		if self._state ~= startingState then
 			return false
 		end
@@ -697,7 +674,6 @@ function RoundService:_waitPhaseOrAbort(
 			return false
 		end
 
-		-- Remediation #4: If all active expedition players are eliminated during TRAVEL, EXPLORATION, or EXTRACTION, terminate immediately
 		if
 			(self._state == "TRAVEL" or self._state == "EXPLORATION" or self._state == "EXTRACTION")
 			and self:_countLivingOrExtractedExpeditionPlayers() == 0
@@ -716,7 +692,6 @@ function RoundService:_waitPhaseOrAbort(
 			return false
 		end
 
-		-- Issue 03 & Remediation #3: Server-side 3D movement sanity check tick
 		if self._movementService then
 			for _, entry in pairs(self._roster) do
 				if entry.player.Parent == Players then
@@ -725,7 +700,6 @@ function RoundService:_waitPhaseOrAbort(
 			end
 		end
 
-		-- Issue 04: Auto-check physical extraction zone during EXTRACTION phase
 		if self._state == "EXTRACTION" and self._hubService then
 			for userId in pairs(self._activeExpeditionUserIds) do
 				local entry = self._roster[userId]
@@ -743,17 +717,30 @@ function RoundService:_waitPhaseOrAbort(
 	return self._state == startingState
 end
 
-function RoundService:_startNewIntermission()
+function RoundService:_startNewIntermission(explicitMissionId: NetworkTypes.MissionTemplateId?)
 	self._roundNumber += 1
 	self._lastOutcome = "PENDING"
-	local templateList = ObjectiveConfig.OrderedTemplateIds
-	local missionIndex = ((self._roundNumber - 1) % #templateList) + 1
-	self._selectedMissionId = templateList[missionIndex]
+
+	if self._objectiveService then
+		self._selectedMissionId =
+			self._objectiveService:SelectMissionForRound(self._roundNumber, explicitMissionId)
+	else
+		local templateList = ObjectiveConfig.OrderedTemplateIds
+		local missionIndex = ((self._roundNumber - 1) % #templateList) + 1
+		self._selectedMissionId = explicitMissionId or templateList[missionIndex]
+	end
+
+	if self._monsterService then
+		self._monsterService:ResetForRound()
+	end
 
 	for _, entry in pairs(self._roster) do
 		entry.status = "HUB_WAITING"
 		entry.isReady = false
 		entry.diedDuringExpedition = false
+		if self._inventoryService and entry.player.Parent == Players then
+			self._inventoryService:ResetMissionItemsForRound(entry.player)
+		end
 	end
 	table.clear(self._activeExpeditionUserIds)
 
@@ -833,17 +820,26 @@ function RoundService:_lockCrewAndDepart()
 end
 
 function RoundService:_enterExplorationPhase()
-	self._objectiveProgress = 0
-	self._objectiveCompleted = false
-
-	-- Priority 2 & Remediation #1: Build physical Station 001 environment, open train-to-station bulkhead doors,
-	-- and spawn active expedition crew onto solid StationEntrySpawn pads (Z = 18..30, outside extraction zone).
 	if self._hubService then
 		self._hubService:BuildStation001Environment()
 		self._hubService:SetStationDoorsOpen(true)
+	end
+
+	if self._monsterService then
+		self._monsterService:ResetForRound()
+	end
+
+	if self._objectiveService then
+		self._objectiveService:StartStationObjective(self._selectedMissionId)
+	end
+
+	if self._hubService then
 		for userId in pairs(self._activeExpeditionUserIds) do
 			local entry = self._roster[userId]
 			if entry and entry.player.Parent == Players and entry.status == "IN_EXPEDITION" then
+				if self._inventoryService then
+					self._inventoryService:ResetMissionItemsForRound(entry.player)
+				end
 				self._hubService:SpawnPlayerInActiveStation(entry.player, entry.spawnSlot)
 			end
 		end
@@ -870,7 +866,6 @@ function RoundService:_enterExtractionPhase()
 	)
 end
 
--- Issue 04 & Remediation #2: Physical Extraction Platform proximity, survival, and eligibility check on departure
 function RoundService:_enterReturnPhase()
 	if self._state == "RETURN" then
 		return
@@ -888,7 +883,6 @@ function RoundService:_enterReturnPhase()
 			if entry.status == "EXTRACTED" then
 				extractedCount += 1
 			elseif entry.status == "IN_EXPEDITION" then
-				-- Perform final physical extraction zone and living state check
 				local isInZone = if self._hubService
 					then self._hubService:IsPlayerInExtractionZone(entry.player)
 					else false
@@ -900,14 +894,12 @@ function RoundService:_enterReturnPhase()
 						self._hubService:MoveCrewToBoardingBay({ entry.player })
 					end
 				else
-					-- Player failed to reach the physical extraction platform before departure
 					entry.status = "ELIMINATED"
 					entry.diedDuringExpedition = true
 					if self._movementService then
 						self._movementService:ResetPlayerState(entry.player)
 					end
 					if self._hubService then
-						-- Only pivots if character is currently alive; never heals a dead humanoid
 						self._hubService:SpawnEliminatedPlayerInHub(entry.player, entry.spawnSlot)
 					end
 					self:SendNotificationToPlayer(
@@ -959,6 +951,14 @@ end
 
 function RoundService:CleanupRound()
 	self._roundJanitor:Cleanup()
+
+	if self._monsterService then
+		self._monsterService:ResetForRound()
+	end
+
+	if self._objectiveService then
+		self._objectiveService:ResetObjectiveState()
+	end
 
 	if self._hubService then
 		self._hubService:ClearRuntimeStation()
@@ -1012,7 +1012,7 @@ function RoundService:_buildStatePayload(): NetworkTypes.RoundStatePayload
 		serverTimestamp = os.time(),
 		phaseEndsAt = self._phaseEndsAt,
 		stationId = self._selectedStationId,
-		missionId = self._selectedMissionId,
+		missionId = self:GetSelectedMissionId(),
 		activeCrewCount = self:_countEligibleHubPlayers(),
 		boardedCrewCount = self:_countBoardedPlayers(),
 		roundNumber = self._roundNumber,
@@ -1037,6 +1037,10 @@ function RoundService:_broadcastState()
 end
 
 function RoundService:_broadcastObjectivePreview()
+	if self._objectiveService then
+		self._objectiveService:BroadcastObjectiveUpdate()
+		return
+	end
 	local remotes = self._remotes
 	if not remotes then
 		return
@@ -1048,9 +1052,9 @@ function RoundService:_broadcastObjectivePreview()
 	local payload: NetworkTypes.ObjectivePayload = {
 		objectiveId = template.id,
 		title = template.title,
-		progress = self._objectiveProgress,
+		progress = 0,
 		requiredProgress = template.requiredProgress,
-		isComplete = self._objectiveCompleted,
+		isComplete = false,
 	}
 	remotes.ObjectiveUpdated:FireAllClients(payload)
 end

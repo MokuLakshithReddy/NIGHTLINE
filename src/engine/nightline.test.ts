@@ -116,7 +116,7 @@ test('Fix 5 & Issue 05 (Toolchain): Official Rojo 7.7.1 build, luau-analyze, lua
   );
 });
 
-test('Priorities 2, 3 & 4 (Luau Runtime VM): Actual /roblox/**/*.lua modules verify Station 001 physical geometry, CanCollide=true spawns, and 10-stage round lifecycle', () => {
+test('Priorities 1, 2, 3 & 4 (Luau Runtime VM): Actual /roblox/**/*.lua modules verify ObjectiveService (RestorePower, RecoverCargo, RepairSignal), MonsterService interfaces, Station 001 physical geometry, and 10-stage round lifecycle', () => {
   const vmResult = runActualLuauModulesInVm();
   assert.equal(
     vmResult.passed,
@@ -129,6 +129,34 @@ test('Priorities 2, 3 & 4 (Luau Runtime VM): Actual /roblox/**/*.lua modules ver
     ),
     true,
     'Luau VM must verify Priority 2 (Station 001 physical floors, CanCollide=true spawns, and collision boundaries)'
+  );
+  assert.equal(
+    vmResult.stdoutLines.some((line) =>
+      line.includes('Priority 1 & 3 (RestorePower): 3 fuses, carry/install, duplicate & mismatch rejection, and carrier recovery verified.')
+    ),
+    true,
+    'Luau VM must verify Priority 1 & 3 RestorePower (3 fuses, carry/install, duplicate & mismatch rejection, carrier recovery)'
+  );
+  assert.equal(
+    vmResult.stdoutLines.some((line) =>
+      line.includes('Priority 1 & 3 (RecoverCargo): 2 cargo containers, pickup/carry/delivery, and anti-duplication verified.')
+    ),
+    true,
+    'Luau VM must verify Priority 1 & 3 RecoverCargo (2 cargo containers, pickup/carry/delivery, anti-duplication)'
+  );
+  assert.equal(
+    vmResult.stdoutLines.some((line) =>
+      line.includes('Priority 1 & 3 (RepairSignal): 3 communication terminals, duplicate & mismatch rejection verified.')
+    ),
+    true,
+    'Luau VM must verify Priority 1 & 3 RepairSignal (3 communication terminals, duplicate & mismatch rejection)'
+  );
+  assert.equal(
+    vmResult.stdoutLines.some((line) =>
+      line.includes('Priority 4: Prepared Hollow AI interfaces (detection, noise, state machine, waypoints, hiding spots, elimination) verified.')
+    ),
+    true,
+    'Luau VM must verify Priority 4 (MonsterService interfaces: detection, noise, state machine, waypoints, hiding spots, elimination)'
   );
   assert.equal(
     vmResult.stdoutLines.some((line) =>

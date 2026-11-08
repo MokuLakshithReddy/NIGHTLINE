@@ -2,7 +2,8 @@
 --[[
 	NetworkTypes.lua
 	Shared strict Luau type definitions for NIGHTLINE: LAST TRAIN.
-	Defines round states, player statuses, equipment slots, and networking payloads.
+	Defines round states, player statuses, equipment slots, objective roles,
+	Hollow AI preparation interfaces, and networking payloads.
 ]]
 
 export type RoundState =
@@ -29,11 +30,63 @@ export type StationId = "Station001"
 
 export type MissionTemplateId = "RestorePower" | "RecoverCargo" | "RepairSignal"
 
+export type ObjectiveInteractionRole =
+	"FusePickup"
+	| "FuseSocket"
+	| "CargoPickup"
+	| "CargoDropPoint"
+	| "SignalTerminal"
+
 export type EquipmentItemId = "Flashlight" | "Flare"
 
-export type MissionItemId = "Fuse"
+export type MissionItemId = "Fuse" | "CargoContainer"
 
 export type NotificationSeverity = "Info" | "Warning" | "Success" | "Danger"
+
+-- Priority 4: The Hollow AI Preparation Types (Section 5)
+export type HollowState = "INACTIVE" | "PATROL" | "INVESTIGATE" | "CHASE" | "SEARCH" | "RETURN"
+
+export type NoiseCategory =
+	"Walk"
+	| "Sprint"
+	| "ObjectiveInteraction"
+	| "FlareDistraction"
+	| "DoorTransit"
+
+export type NoiseEvent = {
+	id: number,
+	sourceUserId: number?,
+	category: NoiseCategory,
+	position: any,
+	radius: number,
+	intensity: number,
+	createdAt: number,
+	expiresAt: number,
+}
+
+export type PlayerDetectionSnapshot = {
+	detected: boolean,
+	userId: number?,
+	position: any,
+	distance: number,
+	hasLineOfSight: boolean,
+	isHidden: boolean,
+	threatScore: number,
+}
+
+export type StationWaypoint = {
+	id: string,
+	roomId: string,
+	position: any,
+	neighbors: { string },
+}
+
+export type HidingSpotRecord = {
+	id: string,
+	part: any,
+	position: any,
+	occupantUserId: number?,
+}
 
 export type RoundStatePayload = {
 	state: RoundState,

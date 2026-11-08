@@ -11,6 +11,7 @@ import gameConfigLua from '../../roblox/ReplicatedStorage/Shared/Config/GameConf
 import itemConfigLua from '../../roblox/ReplicatedStorage/Shared/Config/ItemConfig.lua?raw';
 import stationConfigLua from '../../roblox/ReplicatedStorage/Shared/Config/StationConfig.lua?raw';
 import objectiveConfigLua from '../../roblox/ReplicatedStorage/Shared/Config/ObjectiveConfig.lua?raw';
+import monsterConfigLua from '../../roblox/ReplicatedStorage/Shared/Config/MonsterConfig.lua?raw';
 import rewardConfigLua from '../../roblox/ReplicatedStorage/Shared/Config/RewardConfig.lua?raw';
 import signalLua from '../../roblox/ReplicatedStorage/Shared/Utils/Signal.lua?raw';
 import janitorLua from '../../roblox/ReplicatedStorage/Shared/Utils/Janitor.lua?raw';
@@ -21,6 +22,8 @@ import securityServiceLua from '../../roblox/ServerScriptService/Services/Securi
 import movementServiceLua from '../../roblox/ServerScriptService/Services/MovementService.lua?raw';
 import hubServiceLua from '../../roblox/ServerScriptService/Services/HubService.lua?raw';
 import inventoryServiceLua from '../../roblox/ServerScriptService/Services/InventoryService.lua?raw';
+import objectiveServiceLua from '../../roblox/ServerScriptService/Services/ObjectiveService.lua?raw';
+import monsterServiceLua from '../../roblox/ServerScriptService/Services/MonsterService.lua?raw';
 import roundServiceLua from '../../roblox/ServerScriptService/Services/RoundService.lua?raw';
 import interactionServiceLua from '../../roblox/ServerScriptService/Services/InteractionService.lua?raw';
 
@@ -125,8 +128,15 @@ export const PROJECT_SOURCE_FILES: ProjectSourceFile[] = [
     path: 'roblox/ReplicatedStorage/Shared/Config/ObjectiveConfig.lua',
     robloxInstancePath: 'ReplicatedStorage.Shared.Config.ObjectiveConfig',
     category: 'ReplicatedStorage',
-    summary: 'Mission templates (RestorePower, RecoverCargo, RepairSignal) and required counts.',
+    summary: 'Mission templates (RestorePower, RecoverCargo, RepairSignal) and Station 001 physical node specs.',
     content: objectiveConfigLua,
+  },
+  {
+    path: 'roblox/ReplicatedStorage/Shared/Config/MonsterConfig.lua',
+    robloxInstancePath: 'ReplicatedStorage.Shared.Config.MonsterConfig',
+    category: 'ReplicatedStorage',
+    summary: 'The Hollow AI configuration: state transitions, detection FOV/ranges, noise radii, waypoints, and hiding lockers.',
+    content: monsterConfigLua,
   },
   {
     path: 'roblox/ReplicatedStorage/Shared/Config/RewardConfig.lua',
@@ -181,21 +191,35 @@ export const PROJECT_SOURCE_FILES: ProjectSourceFile[] = [
     path: 'roblox/ServerScriptService/Services/HubService.lua',
     robloxInstancePath: 'ServerScriptService.Services.HubService',
     category: 'ServerScriptService',
-    summary: 'Builds Train Hub, explicit 1..6 spawn-slot allocator, Recovery Bay berths, and physical Extraction Platform zone.',
+    summary: 'Builds Train Hub, Station 001 environment, mission objective nodes, hiding lockers, and navigation waypoints.',
     content: hubServiceLua,
   },
   {
     path: 'roblox/ServerScriptService/Services/InventoryService.lua',
     robloxInstancePath: 'ServerScriptService.Services.InventoryService',
     category: 'ServerScriptService',
-    summary: 'Server-authoritative 2-slot equipment loadout and RequestEquipment validation.',
+    summary: 'Server-authoritative 2-slot equipment loadout and mission item (Fuse, CargoContainer) tracking.',
     content: inventoryServiceLua,
+  },
+  {
+    path: 'roblox/ServerScriptService/Services/ObjectiveService.lua',
+    robloxInstancePath: 'ServerScriptService.Services.ObjectiveService',
+    category: 'ServerScriptService',
+    summary: 'Authoritative mission mechanics for RestorePower, RecoverCargo, and RepairSignal with anti-duplication and carrier recovery.',
+    content: objectiveServiceLua,
+  },
+  {
+    path: 'roblox/ServerScriptService/Services/MonsterService.lua',
+    robloxInstancePath: 'ServerScriptService.Services.MonsterService',
+    category: 'ServerScriptService',
+    summary: 'Prepared server-side interfaces for The Hollow (detection, noise events, state machine, waypoints, hiding spots, elimination).',
+    content: monsterServiceLua,
   },
   {
     path: 'roblox/ServerScriptService/Services/RoundService.lua',
     robloxInstancePath: 'ServerScriptService.Services.RoundService',
     category: 'ServerScriptService',
-    summary: 'Authoritative 8-state round loop, state-aware respawning, elimination handling, and physical extraction validation.',
+    summary: 'Authoritative 8-state round orchestration, state-aware respawning, elimination handling, and physical extraction validation.',
     content: roundServiceLua,
   },
   {
