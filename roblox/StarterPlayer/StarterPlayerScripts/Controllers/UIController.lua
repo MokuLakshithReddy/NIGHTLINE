@@ -243,12 +243,16 @@ function UIController:_onRoundStateChanged(payload: NetworkTypes.RoundStatePaylo
 	self._timeOffset = payload.serverTimestamp - os.time()
 
 	if self._stateLabel then
+		local outcomeSuffix = if payload.state == "RESULTS" and payload.lastOutcome
+			then string.format(" · RESULT: %s", payload.lastOutcome)
+			else ""
 		self._stateLabel.Text = string.format(
-			"ROUND #%d · %s (%d/%d BOARDED)",
+			"ROUND #%d · %s (%d/%d BOARDED)%s",
 			payload.roundNumber,
 			payload.state,
 			payload.boardedCrewCount,
-			payload.activeCrewCount
+			payload.activeCrewCount,
+			outcomeSuffix
 		)
 	end
 
