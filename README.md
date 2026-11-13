@@ -8,10 +8,10 @@
 
 ## At a glance
 
-![GitHub stars](https://img.shields.io/github/stars/MokuLakshithReddy/NIGHTLINE?style=flat-square&label=stars)
-![GitHub forks](https://img.shields.io/github/forks/MokuLakshithReddy/NIGHTLINE?style=flat-square&label=forks)
-![Open issues](https://img.shields.io/github/issues/MokuLakshithReddy/NIGHTLINE?style=flat-square&label=open%20issues)
-![Last commit](https://img.shields.io/github/last-commit/MokuLakshithReddy/NIGHTLINE?style=flat-square)
+[![GitHub stars](https://img.shields.io/github/stars/MokuLakshithReddy/NIGHTLINE?style=flat-square&label=stars)](https://github.com/MokuLakshithReddy/NIGHTLINE/stargazers)
+[![GitHub forks](https://img.shields.io/github/forks/MokuLakshithReddy/NIGHTLINE?style=flat-square)](https://github.com/MokuLakshithReddy/NIGHTLINE/network/members)
+[![Open issues](https://img.shields.io/github/issues/MokuLakshithReddy/NIGHTLINE?style=flat-square)](https://github.com/MokuLakshithReddy/NIGHTLINE/issues)
+[![Last commit](https://img.shields.io/github/last-commit/MokuLakshithReddy/NIGHTLINE?style=flat-square)](https://github.com/MokuLakshithReddy/NIGHTLINE/commits/main)
 
 **Why it matters:** NIGHTLINE is built around cooperative tension rather than isolated combat: players prepare together, choose a destination, split the mission work, and return to the train before the run collapses.
 
@@ -28,6 +28,12 @@ flowchart TD
     F -->|"Return to train"| G["Extract before departure"]
     G --> H["Next station / next run"]
 ```
+
+### Current implementation boundary
+
+The repository documents mission-specific objective handling for Restore Power, Recover Cargo, and Repair Signal, plus server-side validation for distance, cooldowns, duplicate interactions, and mission matching. It also includes server interfaces and state logic prepared for The Hollow. **The active autonomous monster NPC is intentionally not spawned yet**, pending verification of the objective system; do not interpret the prepared service interfaces as proof of a complete live enemy encounter.
+
+Engineering evidence and known gaps are tracked in the [CI workflow](.github/workflows/ci.yml) and the repository's docs directory. The README describes static-analysis and toolchain verification; it does not publish player-count or gameplay-performance benchmarks.
 
 **Verification:** The repository documents a clean-checkout toolchain and CI checks covering Rojo build, Luau formatting/linting/type analysis, Luau VM tests, Workbench tests, TypeScript type-checking, and the production Vite build. See [reproducible setup and test instructions](#4-reproducible-setup-build-and-test-instructions).
 
