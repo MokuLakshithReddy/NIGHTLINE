@@ -1,5 +1,8 @@
 # NIGHTLINE: LAST TRAIN
 
+[![Stars](https://img.shields.io/github/stars/MokuLakshithReddy/NIGHTLINE?style=flat-square)](https://github.com/MokuLakshithReddy/NIGHTLINE/stargazers) [![Forks](https://img.shields.io/github/forks/MokuLakshithReddy/NIGHTLINE?style=flat-square)](https://github.com/MokuLakshithReddy/NIGHTLINE/forks) [![Open Issues](https://img.shields.io/github/issues/MokuLakshithReddy/NIGHTLINE?style=flat-square)](https://github.com/MokuLakshithReddy/NIGHTLINE/issues) [![Last Commit](https://img.shields.io/github/last-commit/MokuLakshithReddy/NIGHTLINE?style=flat-square)](https://github.com/MokuLakshithReddy/NIGHTLINE/commits/main)
+
+
 **Tagline:** Every stop is a risk. Every return is a reward.  
 **Version:** 0.3.0 (Priorities 1–4 Complete: Mission-Specific Objectives via `ObjectiveService`, Independent & Cooperative Mission Regression Suite, and Prepared Server Interfaces for The Hollow via `MonsterService`)  
 **Target Platform:** Roblox (Luau `--!strict`, Rojo 7.7.1, Native Modular Service/Controller Architecture)
