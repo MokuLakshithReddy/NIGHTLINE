@@ -6,6 +6,30 @@
 
 ---
 
+## Core gameplay loop
+
+~~~mermaid
+flowchart TD
+    A["Crew boards the last train"] --> B["Prepare gear in the Train Hub"]
+    B --> C["Vote for the next station"]
+    C --> D["Explore the station as a team"]
+    D --> E["Complete mission objectives"]
+    E --> F["Avoid threats and manage resources"]
+    F --> G{"Crew reaches extraction before departure?"}
+    G -->|Yes| H["Return to train and progress"]
+    G -->|No| I["Round outcome / recovery"]
+    H --> B
+~~~
+
+### Current implementation boundary
+
+The repository documents mission-specific objective handling for Restore Power, Recover Cargo, and Repair Signal, plus server-side validation for distance, cooldowns, duplicate interactions, and mission matching. It also includes server interfaces and state logic prepared for The Hollow. **The active autonomous monster NPC is intentionally not spawned yet**, pending verification of the objective system; do not interpret the prepared service interfaces as proof of a complete live enemy encounter.
+
+Engineering evidence and known gaps are tracked in the [CI workflow](.github/workflows/ci.yml) and the repository's docs directory. The README describes static-analysis and toolchain verification; it does not publish player-count or gameplay-performance benchmarks.
+
+**Why it matters:** the project focuses on cooperative objective play under time pressure, with server-authoritative interaction checks to keep mission progress consistent across players.
+
+---
 ## 1. Project Overview
 
 **NIGHTLINE: LAST TRAIN** is a 1–6 player cooperative survival adventure on Roblox. A crew boards the last functioning train traveling through an abandoned transit network, prepares equipment inside the Train Hub, votes on the next station destination, explores dangerous stations to complete objectives while evading **The Hollow**, and extracts before the train departs.
