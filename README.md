@@ -6,6 +6,32 @@
 
 ---
 
+## At a glance
+
+![GitHub stars](https://img.shields.io/github/stars/MokuLakshithReddy/NIGHTLINE?style=flat-square&label=stars)
+![GitHub forks](https://img.shields.io/github/forks/MokuLakshithReddy/NIGHTLINE?style=flat-square&label=forks)
+![Open issues](https://img.shields.io/github/issues/MokuLakshithReddy/NIGHTLINE?style=flat-square&label=open%20issues)
+![Last commit](https://img.shields.io/github/last-commit/MokuLakshithReddy/NIGHTLINE?style=flat-square)
+
+**Why it matters:** NIGHTLINE is built around cooperative tension rather than isolated combat: players prepare together, choose a destination, split the mission work, and return to the train before the run collapses.
+
+## Gameplay loop
+
+```mermaid
+flowchart TD
+    A["Train Hub: prepare equipment"] --> B["Crew votes on next station"]
+    B --> C["Deploy to station"]
+    C --> D["Complete mission-specific objectives"]
+    D --> E["Avoid The Hollow and manage risk"]
+    E --> F{"Objective and extraction conditions met?"}
+    F -->|"Continue exploring"| D
+    F -->|"Return to train"| G["Extract before departure"]
+    G --> H["Next station / next run"]
+```
+
+**Verification:** The repository documents a clean-checkout toolchain and CI checks covering Rojo build, Luau formatting/linting/type analysis, Luau VM tests, Workbench tests, TypeScript type-checking, and the production Vite build. See [reproducible setup and test instructions](#4-reproducible-setup-build-and-test-instructions).
+
+---
 ## 1. Project Overview
 
 **NIGHTLINE: LAST TRAIN** is a 1–6 player cooperative survival adventure on Roblox. A crew boards the last functioning train traveling through an abandoned transit network, prepares equipment inside the Train Hub, votes on the next station destination, explores dangerous stations to complete objectives while evading **The Hollow**, and extracts before the train departs.
